@@ -19,7 +19,9 @@ public class System {
       
     private double zExtent;
     
-    private double resolution;
+    private double spaceResolution;
+    
+    private double timeResolution;
 
     /**
      * @return the xExtent
@@ -68,8 +70,8 @@ public class System {
      * the system will be evaluated in each axis direction in discrete steps, i.e.
      * finite element analysis. This should be the size of each discrete step.
      */
-    public double getResolution() {
-        return resolution;
+    public double getSpaceResolution() {
+        return spaceResolution;
     }
 
     /**
@@ -77,8 +79,26 @@ public class System {
      * the system will be evaluated in each axis direction in discrete steps, i.e.
      * finite element analysis. This should be the size of each discrete step.
      */
-    public void setResolution(double resolution) {
-        this.resolution = resolution;
+    public void setSpaceResolution(double resolution) {
+        this.spaceResolution = resolution;
+    }
+
+    /**
+     * @return the timeResolution. This is in s. This is the length between
+     * subsequent system evaluations, or the granularity in time. The lower 
+     * the number, the more accurate the simulation will be.
+     */
+    public double getTimeResolution() {
+        return timeResolution;
+    }
+
+    /**
+     * @param timeResolution the timeResolution to set. This is in s. This is the length between
+     * subsequent system evaluations, or the granularity in time. The lower 
+     * the number, the more accurate the simulation will be.
+     */
+    public void setTimeResolution(double timeResolution) {
+        this.timeResolution = timeResolution;
     }
 
     
