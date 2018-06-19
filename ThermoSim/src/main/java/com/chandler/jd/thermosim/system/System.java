@@ -18,6 +18,8 @@ public class System {
     private double yExtent;
       
     private double zExtent;
+    
+    private double resolution;
 
     /**
      * @return the xExtent
@@ -60,5 +62,24 @@ public class System {
     public void setzExtent(double zExtent) {
         this.zExtent = zExtent;
     }
+
+    /**
+     * @return the resolution. This is in m. The idea is that
+     * the system will be evaluated in each axis direction in discrete steps, i.e.
+     * finite element analysis. This should be the size of each discrete step.
+     */
+    public double getResolution() {
+        return resolution;
+    }
+
+    /**
+     * @param resolution the resolution to set. this is in m. The idea is that
+     * the system will be evaluated in each axis direction in discrete steps, i.e.
+     * finite element analysis. This should be the size of each discrete step.
+     */
+    public void setResolution(double resolution) {
+        this.resolution = resolution;
+    }
+
     
 }
