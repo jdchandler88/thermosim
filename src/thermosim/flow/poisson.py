@@ -95,7 +95,7 @@ def _coarsen(lv: _Level, dtype: DTypeLike) -> _Level:
     wyc /= ry
     wzc /= rz
     act = _pad(lv.act, (rx * cx, ry * cy, rz * cz))
-    actc = act.reshape(cx, rx, cy, ry, cz, rz).any(axis=(1, 3, 5))
+    actc = np.asarray(act.reshape(cx, rx, cy, ry, cz, rz).any(axis=(1, 3, 5)))
     lv.ratio = (rx, ry, rz)
     return _new_level((cx, cy, cz), wxc, wyc, wzc, actc, dtype)
 
