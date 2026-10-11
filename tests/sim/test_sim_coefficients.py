@@ -54,7 +54,8 @@ def test_rho_c_matches_direct_property_evaluation(example: Example) -> None:
     liq = m.domain.grid.is_liquid
     T = m.state.T_liquid[liq]
     sg = sc.liquid.specific_gravity
-    direct = np.asarray(pr.wort_density(T, sg)) * np.asarray(pr.wort_specific_heat(T, sg))
+    rho0 = float(pr.wort_density(sc.liquid.initial_temp_K, sg))  # mass fixed at fill temperature
+    direct = rho0 * np.asarray(pr.wort_specific_heat(T, sg))
     assert m._coeffs.rho_c_liquid[liq] == pytest.approx(direct, rel=1e-5)
 
 

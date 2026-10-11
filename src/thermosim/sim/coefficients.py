@@ -118,9 +118,10 @@ def make_cache(
     atm = scenario.atmosphere
     liq_flat = np.flatnonzero(grid.is_liquid.reshape(-1)).astype(np.int64)
     table_T = np.arange(_TABLE_T_MIN, _TABLE_T_MAX + _TABLE_DT, _TABLE_DT)
-    table = np.asarray(pr.wort_density(table_T, sg)) * np.asarray(
-        pr.wort_specific_heat(table_T, sg)
-    )
+    # Liquid mass per cell is fixed at the fill temperature (the grid does not expand), so the
+    # volumetric heat capacity is rho(T0) cp(T): the batch's heat capacity is m cp(T).
+    rho0 = float(pr.wort_density(float(scenario.liquid.initial_temp_K), sg))
+    table = rho0 * np.asarray(pr.wort_specific_heat(table_T, sg))
     D = 2.0 * domain.inner_radius
     base = shell.kind == int(ShellKind.BASE)
     row_base = base[shell.couple_shell]

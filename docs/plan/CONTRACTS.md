@@ -520,7 +520,10 @@ def h_outer(T_s, T_inf, face: OuterFace | array, char_length, wind, p, emissivit
                                                                 # convenience: picks + mixes + adds radiation
 def q_evaporation(T_surf, T_amb, rh, p, h_conv) -> ...          # W/m^2 via Chilton–Colburn analogy; 0 if negative
 def evaporation_mass_flux(T_surf, T_amb, rh, p, h_conv) -> ...  # kg/(m^2 s)
-def h_film_liquid(T_wall, T_bulk, orientation: OuterFace|array, L, sg) -> ...
+def h_film_liquid(T_wall, T_bulk, orientation: OuterFace|array, L, sg, p=101325.0) -> ...
+    # natural convection, smoothly maxed with Rohsenow nucleate boiling above T_sat (capped at CHF)
+def h_film_through_wall(T_node, T_bulk, orientation, L, sg, r_wall, p=101325.0) -> ...
+    # same, solving for the wetted-surface temperature behind half-wall resistance r_wall
     # liquid-side natural convection film coefficient for wall->liquid (Phase 1). orientation is
     # the direction the WALL faces into the liquid: base → UP (heated plate facing up), side → SIDE.
 def h_headspace(T_liquid_surface, T_lid, sg, p, gap=0.10) -> ...  # covered surface <-> headspace incl. condensation; gap = H_v - fill (m)
@@ -553,10 +556,12 @@ class ManualCommand(CommandSource):                # thread-safe; used in REALTI
 
 ```python
 class ThermalSolver:
-    def __init__(self, domain: Domain) -> None: ...         # precomputes index arrays; triggers Numba compile
+    def __init__(self, domain: Domain, threads: int | None = None) -> None: ...  # precomputes; compiles
+        # threads: fixed thread count (else auto: serial < 40k cells, retuned periodically; env THERMOSIM_THREADS)
     def initial_state(self, T0_liquid: float, T0_shell: float, T_amb: float) -> ThermalState: ...  # lid & headspace start at T_amb
     def stable_dt(self, coeffs: StepCoefficients) -> float: ...   # s, liquid stability limit * 0.9
-    def step(self, state: ThermalState, coeffs: StepCoefficients, dt: float) -> EnergyFlows: ...
+    def step(self, state: ThermalState, coeffs: StepCoefficients, dt: float,
+             reuse_conductances: bool = False, swap_buffers: bool = False) -> EnergyFlows: ...
         # advances state IN PLACE by dt (state.t += dt). Shell/lid/headspace may substep internally.
         # Raises SolverError if dt > stable_dt or any NaN appears.
     def internal_energy(self, state: ThermalState, coeffs: StepCoefficients) -> float: ...  # J, reference 0 K

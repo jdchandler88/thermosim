@@ -36,9 +36,9 @@ overstate its losses, because in the 3-D model only the base is hot.)
 Refinements that made the lumped model agree with the 3-D one (WP10 Part B), each a property
 of the 3-D model that a single-temperature model would otherwise miss:
 
-* the heat capacity of the liquid is ``V rho(T) cp(T)`` as in the coefficient table (the
-  volume is fixed, so the density follows the temperature; ``constant_mass=True`` gives the
-  physical m cp(T), about 2 % slower to the boil);
+* the heat capacity of the liquid is ``m cp(T)`` with the mass fixed at the fill temperature,
+  as in the coefficient table (``constant_mass=False`` gives the older fixed-volume
+  ``V rho(T) cp(T)``, about 2 % faster to the boil);
 * the wall above the liquid is a fin (conductance ``k t``) rooted at the wetted wall, not a
   wall at the liquid temperature: it cools within a few centimetres of the waterline, so its
   losses are a fraction of the area-times-h estimate.
@@ -101,8 +101,8 @@ class LumpedModel:
             seconds (as in the 3-D model); if None they follow the state continuously.
         rtol: relative tolerance of the RK45 integration.
         sample_interval_s: spacing of the returned time series.
-        constant_mass: use a constant liquid mass (heat capacity m cp(T)) instead of the 3-D
-            model's fixed volume with rho(T) cp(T). Not the default, so that the two agree.
+        constant_mass: use a constant liquid mass (heat capacity m cp(T)), as the 3-D model
+            does; False uses a fixed volume with rho(T) cp(T).
     """
 
     def __init__(
@@ -112,7 +112,7 @@ class LumpedModel:
         refresh_s: float | None = None,
         rtol: float = 1e-8,
         sample_interval_s: float = 1.0,
-        constant_mass: bool = False,
+        constant_mass: bool = True,
     ) -> None:
         self.scenario = scenario
         self.refresh_s = refresh_s
@@ -189,9 +189,8 @@ class LumpedModel:
 
     # ------------------------------------------------------------------ hooks
     def _C_liquid(self, T_liquid: float) -> float:
-        # as in the 3-D coefficient table: rho(T) cp(T) V with the volume held fixed, i.e. the
-        # density follows the temperature (no thermal expansion, so the heat capacity of the
-        # liquid falls by about 4 % between 20 and 100 C)
+        # constant_mass (default, as in the 3-D model): m cp(T) with m fixed at the fill
+        # temperature; otherwise V rho(T) cp(T) with the volume held fixed
         if self.constant_mass:
             return self.mass * float(pr.wort_specific_heat(T_liquid, self.sg))
         return self.volume * float(
