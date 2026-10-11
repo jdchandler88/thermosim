@@ -388,7 +388,9 @@ def h_film_liquid(
     return _ret(h)
 
 
-def h_headspace(T_liquid_surface: Num, T_lid: Num, sg: Num, p: Num) -> Num:
+def h_headspace(
+    T_liquid_surface: Num, T_lid: Num, sg: Num, p: Num, gap: Num = HEADSPACE_GAP_M
+) -> Num:
     """Covered free surface <-> lid/headspace coefficient, W/(m^2 K), q = h (T_surf - T_lid).
 
     Sum of (a) enclosed-cavity natural convection of the humid-air layer (gap
@@ -405,7 +407,7 @@ def h_headspace(T_liquid_surface: Num, T_lid: Num, sg: Num, p: Num) -> Num:
     Ts, Tl, s = np.broadcast_arrays(_a(T_liquid_surface), _a(T_lid), _a(sg))
     pp = _a(p)
     f = _Film(Ts, Tl, pp)
-    L = HEADSPACE_GAP_M
+    L = np.maximum(np.asarray(gap, dtype=float), 1e-3)
     Ra = f.rayleigh(L)
     Nu = np.where(f.dT_signed >= 0.0, np.maximum(1.0, 0.069 * Ra ** (1.0 / 3.0) * f.pr**0.074), 1.0)
     h_cav = Nu * f.k / L

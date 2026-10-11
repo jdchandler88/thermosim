@@ -515,15 +515,16 @@ def h_forced_cylinder(T_s, T_inf, D, U, p) -> ...               # Churchill–Be
 def h_forced_plate(T_s, T_inf, L, U, p) -> ...                  # laminar/turbulent flat plate
 def h_mixed(h_nat, h_forced) -> ...                             # (h_n^3 + h_f^3)^(1/3)
 def h_radiation(T_s, T_inf, emissivity) -> ...                  # exact linearization eps*sigma*(Ts^2+Ti^2)(Ts+Ti)
-def h_outer(T_s, T_inf, face: OuterFace | array, char_length, wind, p, emissivity) -> ...
+def h_outer(T_s, T_inf, face: OuterFace | array, char_length, wind, p, emissivity, diameter=None) -> ...
+                                                                # diameter: cylinder crossflow D (pass Shell.outer_diameter); defaults to char_length
                                                                 # convenience: picks + mixes + adds radiation
 def q_evaporation(T_surf, T_amb, rh, p, h_conv) -> ...          # W/m^2 via Chilton–Colburn analogy; 0 if negative
 def evaporation_mass_flux(T_surf, T_amb, rh, p, h_conv) -> ...  # kg/(m^2 s)
 def h_film_liquid(T_wall, T_bulk, orientation: OuterFace|array, L, sg) -> ...
     # liquid-side natural convection film coefficient for wall->liquid (Phase 1). orientation is
     # the direction the WALL faces into the liquid: base → UP (heated plate facing up), side → SIDE.
-def h_headspace(T_liquid_surface, T_lid, sg, p) -> ...          # covered surface <-> headspace incl. condensation
-def k_effective(T_bulk, T_hot, depth, sg, scale=1.0) -> ...     # W/(m K), >= molecular k; Nu(Ra) based
+def h_headspace(T_liquid_surface, T_lid, sg, p, gap=0.10) -> ...  # covered surface <-> headspace incl. condensation; gap = H_v - fill (m)
+def k_effective(T_bulk, T_hot, depth, sg, scale=1.0) -> ...     # W/(m K) = k_mol * max(1, scale * C * Ra^(1/3)); always >= k_mol
 ```
 
 ## 8. WP04: `thermosim.geometry`
@@ -589,6 +590,7 @@ class Comparison: rmse_K: float; max_abs_K: float; bias_K: float
                   time_to_target_sim_s: float | None; time_to_target_meas_s: float | None
                   time_to_target_error_rel: float | None
 def compare(samples: list[Sample], probe: str, measured: MeasuredSeries, target_temp_K: float | None) -> Comparison
+    # probe: a probe name or "mean" (T_mean)
 ```
 
 ## 12. WP09: `thermosim.sim`
