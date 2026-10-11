@@ -222,7 +222,7 @@ class Sample:
     T_min: float
     T_max: float
     T_shell_mean: float              # K, area-weighted
-    command: float                   # 0..1 requested power fraction
+    command: float                   # 0..1 requested power fraction (before the actuator)
     power_delivered: float           # W into vessel/liquid
     power_gross: float               # W consumed (fuel energy rate or electrical)
     cumulative: EnergyFlows          # J since start

@@ -677,7 +677,7 @@ class ModelSettings(BaseModel):
         "Calibration factor multiplying the effective conductivity of the liquid.",
         1.0,
         gt=0.0,
-        le=10.0,
+        le=1000.0,
     )
 
     @model_validator(mode="after")
