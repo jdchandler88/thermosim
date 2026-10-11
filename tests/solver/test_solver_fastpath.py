@@ -185,3 +185,20 @@ def test_swap_buffers_gives_identical_steps_and_leaves_the_state_on_failure(
     ident = id(state.T_liquid)
     solver.step(state, c, 0.5 * solver.stable_dt(c))
     assert id(state.T_liquid) == ident
+
+
+def test_thread_limit_is_the_pool_size_not_a_leftover_setting() -> None:
+    """numba.set_num_threads is per calling thread and sticky: a solver that ran with fewer
+    threads must not lower the limit of the next solver."""
+    import numba
+
+    numba.set_num_threads(1)
+    try:
+        tuner = th._ThreadTuner(
+            int(numba.config.NUMBA_NUM_THREADS), None, 10 * th.SERIAL_BELOW_CELLS
+        )
+        solver = ThermalSolver(box_domain(4, 4, 4, 0.01))
+        assert solver._tuner.n_max == int(numba.config.NUMBA_NUM_THREADS)
+        assert tuner.n_max == solver._tuner.n_max
+    finally:
+        numba.set_num_threads(int(numba.config.NUMBA_NUM_THREADS))

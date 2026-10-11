@@ -194,7 +194,8 @@ class ThermalSolver:
         self._cap = np.zeros(n_liq, dtype=np.float64)
         self._build_layout()
         fixed = threads if threads is not None else _thread_limit()
-        self._tuner = _ThreadTuner(numba.get_num_threads(), fixed, n_liq)
+        pool = int(numba.config.NUMBA_NUM_THREADS)  # type: ignore[attr-defined]
+        self._tuner = _ThreadTuner(pool, fixed, n_liq)
         self._prep: tuple[object, ...] | None = None
         _warmup()
         if self._tuner.best > 1:

@@ -51,7 +51,7 @@ DT_MIN = 1e-3  # K, below this |dT| the natural-convection result is floored
 H_FLOOR_SMALL_DT = 1.0  # W/(m^2 K), floor of a natural-convection h when |dT| < DT_MIN
 H_FILM_MIN = 50.0  # W/(m^2 K), clip of the liquid-side film coefficient
 H_FILM_MAX = 5000.0  # natural-convection part only; nucleate boiling can exceed it
-_BISECT_ITER = 11  # surface-temperature bisection of boiling rows (0.02 K for a 40 K bracket)
+_BISECT_ITER = 9  # surface-temperature bisection of boiling rows (0.08 K for a 40 K bracket)
 _FILM_T_MIN, _FILM_T_MAX = 273.2, 392.9  # K, range of the wort property fits (with margin)
 C_SF_WATER = 0.013  # Rohsenow surface-fluid constant, water on polished stainless/copper
 K_EFF_C = 0.1  # Nu = C Ra^(1/3) coefficient of the effective conductivity closure

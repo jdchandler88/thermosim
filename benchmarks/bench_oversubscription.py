@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -92,6 +93,31 @@ def config_env(cfg: str) -> dict[str, str]:
     return {}
 
 
+def run_command(cmd: str, n_burn: int, timeout: float, idle: bool = True) -> None:
+    """Time ``cmd`` on an idle machine and next to ``n_burn`` busy-loop processes."""
+    print(f"cpus={os.cpu_count()}  command: {cmd}")
+    for burners in (0, n_burn) if idle else (n_burn,):
+        procs = [subprocess.Popen([sys.executable, "-c", BURNER]) for _ in range(burners)]
+        try:
+            time.sleep(1.0)
+            t0 = time.perf_counter()
+            try:
+                done = subprocess.run(
+                    shlex.split(cmd), capture_output=True, text=True, timeout=timeout
+                )
+                status = f"exit {done.returncode}"
+                if done.returncode != 0:
+                    status += "\n" + "\n".join(done.stdout.splitlines()[-25:])
+            except subprocess.TimeoutExpired:
+                status = f"TIMEOUT after {timeout:.0f} s"
+            print(f"burners={burners:>3}: {time.perf_counter() - t0:7.1f} s  {status}", flush=True)
+        finally:
+            for p in procs:
+                p.kill()
+            for p in procs:
+                p.wait()
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--worker", action="store_true")
@@ -105,12 +131,22 @@ def main() -> None:
         default="default,threads=1,threads=2",
         help="comma list of configurations: default, threads=N, layer=NAME, env=NAME=VALUE",
     )
+    ap.add_argument("--no-idle", action="store_true", help="with --cmd: skip the idle run")
+    ap.add_argument(
+        "--cmd",
+        default=None,
+        help="instead of the table: run this command (e.g. a pytest invocation) once idle and "
+        "once with the burners, and report the durations",
+    )
     args = ap.parse_args()
     if args.worker:
         worker(args.cell_size, args.sim_s, args.volume)
         return
 
     n_burn = args.burners if args.burners is not None else (os.cpu_count() or 1)
+    if args.cmd:
+        run_command(args.cmd, n_burn, args.timeout, idle=not args.no_idle)
+        return
     print(f"cpus={os.cpu_count()}  load before: {os.getloadavg()}")
     print(f"{'config':<28}{'burners':>8}{'ms/step':>12}{'threads':>9}{'layer':>11}")
     for burners in (0, n_burn):
