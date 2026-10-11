@@ -147,6 +147,10 @@ controller. Boil-off comes later. Panning the slice comes later
 - **F5** Known limitation of Phase 1: the effective conductivity
   spreads heat equally in every direction. Directional effects, such as cold
   liquid staying below an element mounted high, are captured only in Phase 2.
+- **F6** Known limitation of Phase 1, accepted and deferred: liquid cells right
+  next to a burner footprint or an element can read above the boiling point (up
+  to about 222 °F in the 40 L propane example). The mean temperature and the
+  heating time are not affected. It will be revisited in Phase 2 or later.
 
 ## 5. Behavior
 
@@ -191,6 +195,9 @@ controller. Boil-off comes later. Panning the slice comes later
 - **R2** At the standard cell size (5 mm), a 45-minute simulated
   heat-up of a 50 L kettle finishes in under 5 minutes on a typical 4-core
   Windows laptop. A "preview" cell size (10 mm) finishes in under 30 seconds.
+  *Status:* measured at 5.5–9 min on the development VM (see
+  `benchmarks/RESULTS.md`). Accepted as is: the 5 mm default stays, and 10 mm
+  gives heating times within about 0.04%.
 - **R3** Real-time mode at 1× speed keeps up at any supported cell
   size.
 

@@ -180,6 +180,18 @@ Fix the highlighted field (here, a fill height lower than the element's legs, or
 element) and run again. Relationships between fields (a probe above the liquid, a lid
 insulation without a lid) are reported one at a time: fix one and the next may appear.
 
+### Known limitations
+
+- **Readings above boiling next to the heat source.** Probes or cells right next to a burner
+  footprint or an element can show temperatures above the boiling point (up to about
+  222 °F). The model does not boil the liquid; it uses an "effective conductivity" to stand in
+  for convection, and very close to a strong heat source that shortcut lets the water there
+  overheat. The average temperature and the time to target are not affected. Put probes
+  away from the heat source for realistic readings.
+- **Run time at fine cell sizes.** A large kettle at the 5 mm cell size can take several
+  minutes. The 10 mm size gives nearly identical heating times (within about 0.04%) in
+  well under a minute.
+
 ## 8. Importing measured data and comparing
 
 Use **Import measured** (toolbar or *File*) to overlay a thermometer log from a CSV
