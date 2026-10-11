@@ -56,6 +56,7 @@ from typing import Any, NamedTuple
 
 import numba
 import numpy as np
+from numpy.typing import NDArray
 
 from thermosim.core.errors import SolverError
 from thermosim.core.types import F64, I64, Domain, EnergyFlows, StepCoefficients, ThermalState
@@ -478,7 +479,7 @@ class ThermalSolver:
             vals = net.nbr_area[:, 2 * ax : 2 * ax + 2].ravel()
             u, cnt = np.unique(vals[vals > 0.0], return_counts=True)
             areas.append(float(u[np.argmax(cnt)]) if u.size else 0.0)
-        mask = (net.nbr >= 0).all(axis=1)
+        mask: NDArray[np.bool_] = np.asarray((net.nbr >= 0).all(axis=1))
         for d in range(6):
             mask &= net.nbr_area[:, d] == areas[d // 2]
         mask[net.special] = False

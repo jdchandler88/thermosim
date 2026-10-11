@@ -344,7 +344,7 @@ def build_shell(
     couple_cell = np.concatenate(cc_list).astype(np.int64)
     couple_area = np.concatenate(ca_list)
 
-    wetted = np.bincount(couple_shell, weights=couple_area, minlength=n)
+    wetted = np.bincount(couple_shell, weights=couple_area, minlength=n).astype(np.float64)
     dry = area - wetted
     if np.any(dry < -1e-12 * area):  # pragma: no cover - guarded by construction
         raise GeometryError("internal error: wetted area exceeds node area")
