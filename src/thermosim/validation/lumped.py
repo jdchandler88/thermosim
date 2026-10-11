@@ -27,8 +27,21 @@ power schedule, with the actuator at its steady value: variable and on/off actua
 the command as an average fraction, a gas valve applies its turndown rule
 (``GasValveActuator.target``). The valve lag (a few seconds) and the SSR cycling are not
 modelled; the schedule is applied as piecewise-constant segments. This replicates
-``thermosim.sources`` without building a domain; a burner heats the shell, an element heats
-the liquid.
+``thermosim.sources`` without building a domain. Both a burner and an element deliver their
+power to the liquid: a burner heats the base, but the base outer loss is zero while it fires
+(the burner efficiency already accounts for it), so the heat goes into the liquid whatever the
+base temperature. (Routing it through the single shell node would heat the whole wall and
+overstate its losses, because in the 3-D model only the base is hot.)
+
+Refinements that made the lumped model agree with the 3-D one (WP10 Part B), each a property
+of the 3-D model that a single-temperature model would otherwise miss:
+
+* the heat capacity of the liquid is ``V rho(T) cp(T)`` as in the coefficient table (the
+  volume is fixed, so the density follows the temperature; ``constant_mass=True`` gives the
+  physical m cp(T), about 2 % slower to the boil);
+* the wall above the liquid is a fin (conductance ``k t``) rooted at the wetted wall, not a
+  wall at the liquid temperature: it cools within a few centimetres of the waterline, so its
+  losses are a fraction of the area-times-h estimate.
 """
 
 from __future__ import annotations
@@ -88,6 +101,8 @@ class LumpedModel:
             seconds (as in the 3-D model); if None they follow the state continuously.
         rtol: relative tolerance of the RK45 integration.
         sample_interval_s: spacing of the returned time series.
+        constant_mass: use a constant liquid mass (heat capacity m cp(T)) instead of the 3-D
+            model's fixed volume with rho(T) cp(T). Not the default, so that the two agree.
     """
 
     def __init__(
@@ -97,11 +112,13 @@ class LumpedModel:
         refresh_s: float | None = None,
         rtol: float = 1e-8,
         sample_interval_s: float = 1.0,
+        constant_mass: bool = False,
     ) -> None:
         self.scenario = scenario
         self.refresh_s = refresh_s
         self.rtol = rtol
         self.sample_interval_s = sample_interval_s
+        self.constant_mass = constant_mass
         # Test hook: with a zero shell capacity the shell is algebraic (no-lid scenarios only).
         self.shell_quasi_steady = False
 
@@ -172,7 +189,14 @@ class LumpedModel:
 
     # ------------------------------------------------------------------ hooks
     def _C_liquid(self, T_liquid: float) -> float:
-        return self.mass * float(pr.wort_specific_heat(T_liquid, self.sg))
+        # as in the 3-D coefficient table: rho(T) cp(T) V with the volume held fixed, i.e. the
+        # density follows the temperature (no thermal expansion, so the heat capacity of the
+        # liquid falls by about 4 % between 20 and 100 C)
+        if self.constant_mass:
+            return self.mass * float(pr.wort_specific_heat(T_liquid, self.sg))
+        return self.volume * float(
+            pr.wort_density(T_liquid, self.sg) * pr.wort_specific_heat(T_liquid, self.sg)
+        )
 
     def _C_shell(self) -> float:
         return self.C_shell
@@ -217,9 +241,11 @@ class LumpedModel:
         h_side = float(cor.h_film_liquid(T_shell, T_liquid, OuterFace.SIDE, self.fill, sg, p))
         G_film = h_base * self.A_disk + h_side * 2.0 * math.pi * R * self.fill
 
+        # wetted side wall: outer loss over the wetted height only
+        A_wet = 2.0 * math.pi * (self.R + self.t_w) * self.fill
         G_side = self._outer_G(
             T_shell,
-            self.A_side_out,
+            A_wet,
             OuterFace.SIDE,
             self.H_v + self.t_b,
             self.eps_side,
@@ -238,7 +264,6 @@ class LumpedModel:
                 None,
             )
 
-        A_dry = 2.0 * math.pi * R * (self.H_v - self.fill)
         gap = self.H_v - self.fill
         A_open = (1.0 - self.f_cover) * self.A_disk
         h_open = float(
@@ -252,10 +277,10 @@ class LumpedModel:
                 cor.q_evaporation(T_liquid, Ta, self.rh, p, max(h_open - h_rad, 0.0))
             )
 
+        T_f = Ta + 0.5 * (T_shell - Ta)  # film temperature along the (cooling) dry wall
         if self.has_lid:
             h_hs = float(cor.h_headspace(T_liquid, T_lid, sg, p, gap))
-            h_dry = float(cor.h_headspace(T_shell, T_lid, sg, p, gap))
-            G_dry = h_dry * A_dry
+            h_i = float(cor.h_headspace(T_f, T_lid, sg, p, gap))
             G_cov = h_hs * self.f_cover * self.A_disk
             G_lid_in = h_hs * self.A_lid
             G_opening = h_hs * (1.0 - self.f_cover) * self.A_disk
@@ -263,13 +288,39 @@ class LumpedModel:
                 T_lid, self.A_lid, OuterFace.UP, R / 2.0, self.eps_lid, self.R_ins_lid, None
             )
         else:
-            h_dry = float(cor.h_natural_vertical(T_shell, Ta, gap, p)) + 0.5 * float(
-                cor.h_radiation(T_shell, Ta, self.wall.emissivity)
+            h_i = float(cor.h_natural_vertical(T_f, Ta, gap, p)) + 0.5 * float(
+                cor.h_radiation(T_f, Ta, self.wall.emissivity)
             )
-            G_dry = h_dry * A_dry
             G_cov = G_lid_in = G_opening = G_lid_out = 0.0
+        # Dry wall above the liquid: a fin of conductance k t whose root is the wetted wall.
+        # In the 3-D model the wall conducts heat up from the waterline and cools within a few
+        # centimetres, so the dry wall loses far less than a wall at the liquid temperature.
+        G_dry_out = G_dry = 0.0
+        if gap > 1e-6:
+            g_o = self._outer_G(
+                T_f, 1.0, OuterFace.SIDE, gap, self.eps_side, self.R_ins_side, self.D_out
+            )
+            g_all = g_o + h_i
+            kt = self.wall.conductivity * self.t_w
+            m_fin = math.sqrt(g_all / kt)
+            G_fin = (
+                2.0
+                * math.pi
+                * (self.R + 0.5 * self.t_w)
+                * math.sqrt(g_all * kt)
+                * math.tanh(m_fin * gap)
+            )
+            G_dry_out, G_dry = G_fin * g_o / g_all, G_fin * h_i / g_all
         return _Coeffs(
-            G_film, G_side + G_base, G_dry, G_open, Q_evap, G_cov, G_lid_in, G_lid_out, G_opening
+            G_film,
+            G_side + G_base + G_dry_out,
+            G_dry,
+            G_open,
+            Q_evap,
+            G_cov,
+            G_lid_in,
+            G_lid_out,
+            G_opening,
         )
 
     # ------------------------------------------------------------------ ODE
@@ -366,7 +417,7 @@ class LumpedModel:
         while t_hit is None and t < t_max - 1e-9:
             cmd = self._command_at(t)
             P = self.power(cmd)
-            Q = (P, 0.0) if not self._burner else (0.0, P)
+            Q = (P, 0.0)
             firing = P > 0.0
             nxt = min([b for b in bounds if b > t + 1e-12] + [t_max])
             t_end = min(t + chunk, nxt)

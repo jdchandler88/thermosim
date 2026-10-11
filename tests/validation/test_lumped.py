@@ -50,13 +50,12 @@ def test_matches_analytic_newton_cooling(name: str) -> None:
     model = _ConstantModel(sc)
     res = model.run()
     assert res.stop_reason is StopReason.MAX_TIME
-    # Algebraic shell: liquid -(Gf)- shell -(Gl)- ambient, plus the open surface. A burner's
-    # power enters the shell node, so a fraction Gf/(Gf+Gl) of it reaches the liquid and the
-    # effective loss is the series conductance; an element heats the liquid directly.
+    # Algebraic shell: liquid -(Gf)- shell -(Gl)- ambient, plus the open surface. The burner's
+    # power is delivered to the liquid (the base outer loss is zero while it fires, so none of
+    # it is lost on the way), as is an element's; the loss is the series conductance.
     Gf, Gl = model.G_FILM, model.G_OUT + model.G_DRY
     G = Gf * Gl / (Gf + Gl) + model.G_OPEN
-    P = model.power(1.0)
-    P_eff = P * Gf / (Gf + Gl) if isinstance(sc.heat_source, schema.Burner) else P
+    P_eff = model.power(1.0)
     ana = lumped_newton(
         res.t,
         sc.liquid.initial_temp_K,
