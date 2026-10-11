@@ -84,6 +84,8 @@ class CoefficientCache:
     table_T: F64
     table_rho_c: F64
     liq_flat: I64
+    liq_volume: F64
+    liq_volume_sum: float
     gap: float
     wall_emissivity_inner: float
     face: I64
@@ -114,6 +116,7 @@ def make_cache(
     grid, shell = domain.grid, domain.shell
     sg = float(scenario.liquid.specific_gravity)
     atm = scenario.atmosphere
+    liq_flat = np.flatnonzero(grid.is_liquid.reshape(-1)).astype(np.int64)
     table_T = np.arange(_TABLE_T_MIN, _TABLE_T_MAX + _TABLE_DT, _TABLE_DT)
     table = np.asarray(pr.wort_density(table_T, sg)) * np.asarray(
         pr.wort_specific_heat(table_T, sg)
@@ -141,7 +144,9 @@ def make_cache(
         deposition=deposition,
         table_T=table_T,
         table_rho_c=table,
-        liq_flat=np.flatnonzero(grid.is_liquid.reshape(-1)).astype(np.int64),
+        liq_flat=liq_flat,
+        liq_volume=np.ascontiguousarray(grid.volume.reshape(-1)[liq_flat], dtype=np.float64),
+        liq_volume_sum=float(grid.volume.reshape(-1)[liq_flat].sum()),
         gap=max(domain.inner_height - domain.fill_height, _MIN_GAP_M),
         wall_emissivity_inner=vessel_emissivity,
         face=np.asarray(shell.outer_face, dtype=np.int64),
@@ -204,7 +209,7 @@ def build_coefficients(
     D = 2.0 * domain.inner_radius
     T_flat = state.T_liquid.reshape(-1)
     T_liq = T_flat[cache.liq_flat]
-    T_mean = mean_liquid_T(domain, state.T_liquid)
+    T_mean = float(np.dot(T_liq, cache.liq_volume)) / cache.liq_volume_sum
     on = source_output is not None and source_output.delivered_W > 0.0
 
     coeffs = cache.coeffs

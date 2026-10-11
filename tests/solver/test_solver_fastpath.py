@@ -11,6 +11,7 @@ import dataclasses
 import numpy as np
 import pytest
 
+from thermosim.core.errors import SolverError
 from thermosim.core.types import Domain, StepCoefficients
 from thermosim.solver import ThermalSolver
 from thermosim.solver import thermal as th
@@ -158,3 +159,29 @@ def test_tuner_falls_back_to_fewer_threads_when_parallel_is_slower(
         n = tuner.pick()
         tuner.record(n, cost[n] * 1e-3)
     assert tuner.best == 4
+
+
+def test_swap_buffers_gives_identical_steps_and_leaves_the_state_on_failure(
+    domain: Domain,
+) -> None:
+    c, t0, _, _ = _setup(domain)
+    plain = _run(ThermalSolver(domain, threads=1), domain, c, t0)
+    swapped = _run(ThermalSolver(domain, threads=1), domain, c, t0, swap_buffers=True)
+    np.testing.assert_array_equal(plain[0], swapped[0])
+    np.testing.assert_array_equal(plain[1], swapped[1])
+
+    solver = ThermalSolver(domain, threads=1)
+    state = solver.initial_state(300.0, 300.0, T_AMB)
+    state.T_liquid[:] = np.where(domain.grid.is_liquid, t0, 0.0)
+    before, ident = state.T_liquid.copy(), id(state.T_liquid)
+    solver.step(state, c, 0.5 * solver.stable_dt(c), swap_buffers=True)
+    assert id(state.T_liquid) != ident  # the buffers were swapped
+    assert state.T_liquid.shape == before.shape and state.T_liquid.flags.c_contiguous
+    kept = state.T_liquid.copy()
+    with pytest.raises(SolverError):
+        solver.step(state, c, 3.0 * solver.stable_dt(c), swap_buffers=True)
+    np.testing.assert_array_equal(state.T_liquid, kept)  # untouched by the failed step
+    # the default way of committing keeps the array object
+    ident = id(state.T_liquid)
+    solver.step(state, c, 0.5 * solver.stable_dt(c))
+    assert id(state.T_liquid) == ident

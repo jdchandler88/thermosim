@@ -161,7 +161,7 @@ class ThermalSolver:
         n_s = len(self.net.surf_n)
         n_liq = self.net.n_liq
         self._extra = np.zeros((n_liq, 2), dtype=np.float64)
-        self._t_new = np.zeros(n_liq, dtype=np.float64)
+        self._out: F64 | None = None  # spare full-size buffer the step writes into
         self._part = np.zeros((kn.N_BLOCKS, 3), dtype=np.float64)
         self._cs = np.zeros(n_sh)
         self._g_out = np.zeros(n_sh)
@@ -258,6 +258,7 @@ class ThermalSolver:
         dt: float,
         *,
         reuse_conductances: bool = False,
+        swap_buffers: bool = False,
     ) -> EnergyFlows:
         """Advance ``state`` in place by ``dt`` seconds (``state.t += dt``).
 
@@ -270,6 +271,12 @@ class ThermalSolver:
                 (the model refreshes them at fixed intervals), so the conductances are not
                 rebuilt. Ignored (they are rebuilt) when ``coeffs`` holds a different set of
                 arrays than at the last preparation.
+            swap_buffers: commit the new liquid temperatures by replacing
+                ``state.T_liquid`` with the solver's spare array (and keeping the old one as the
+                spare) instead of copying into the existing array. Saves a pass over the grid, but
+                anything holding a reference to the old ``state.T_liquid`` sees stale values, so
+                it is off by default; the model uses it. Cells outside the liquid keep their
+                initial values (zero).
 
         Returns:
             The energy in J that flowed during the step, by category.
@@ -356,9 +363,11 @@ class ThermalSolver:
         if not (
             shell_finite and np.isfinite(flows).all() and math.isfinite(t_lid + t_hs + d_shell)
         ):
-            self._raise_non_finite(ts_work, t_lid, t_hs, liquid=False)
+            self._raise_non_finite(ts_work, t_lid, t_hs)
 
-        # Liquid: update, check and (only if both checks pass) write back, in one call.
+        # Liquid: update into the spare buffer; committed below only if both checks pass.
+        out = self._spare(t_liq)
+        out_flat = out.reshape(-1)
         lay = self._layout
         n_thr = self._tuner.pick()
         t_start = time.perf_counter()
@@ -383,7 +392,7 @@ class ThermalSolver:
             self._dx,
             dt,
             _STABILITY_MARGIN * _DT_TOLERANCE,
-            self._t_new,
+            out_flat,
             self._part,
         )
         if n_thr > 1:
@@ -393,8 +402,8 @@ class ThermalSolver:
             ok = kn.liquid_step_ser(*args)
         self._tuner.record(n_thr, time.perf_counter() - t_start)
         if not ok:
-            if not np.isfinite(self._t_new).all():
-                self._raise_non_finite(ts_work, t_lid, t_hs)
+            if not np.isfinite(out_flat[net.liq_flat]).all():
+                self._raise_non_finite(ts_work, t_lid, t_hs, out_flat)
             stable = self._dt_from_rate(float(self._part[:, 2].max()))
             raise SolverError(f"dt = {dt:g} s exceeds the stable time step {stable:g} s")
         flows[kn.F_ST_LIQ] = float(self._part[:, 0].sum())
@@ -403,7 +412,12 @@ class ThermalSolver:
         flows[kn.F_ST_SHELL] = d_shell
         flows[kn.F_ST_LID] = lid.heat_capacity * (t_lid - state.T_lid) if lid.present else 0.0
 
-        # Commit the small parts (the liquid is already written).
+        # Commit: liquid, then the small parts.
+        if swap_buffers:
+            self._out = t_liq
+            state.T_liquid = out
+        else:
+            kn.copy_liquid(t_flat, out_flat, net.liq_flat)
         state.T_shell[:] = ts_work
         state.T_lid = float(t_lid)
         state.T_headspace = float(t_hs)
@@ -493,9 +507,13 @@ class ThermalSolver:
         """The fast path needs a uniform, positive conductivity; otherwise use the general one."""
         if self._interior is None:
             return self._general
-        kl = k_flat[self.net.liq_flat]
-        k0 = float(kl[0])
-        if not (k0 > 0.0 and float(kl.min()) == k0 and float(kl.max()) == k0):
+        k0 = float(k_flat[self.net.liq_flat[0]])
+        # cheap test on the whole array first (the model fills it uniformly); otherwise gather
+        if not (float(k_flat.min()) == k0 == float(k_flat.max())):
+            kl = k_flat[self.net.liq_flat]
+            if not (float(kl.min()) == k0 == float(kl.max())):
+                return self._general
+        if not k0 > 0.0:
             return self._general
         kh = 2.0 * k0 * k0 / (k0 + k0)
         gx, gy, gz = (a * kh / self._dx for a in self._interior_area)
@@ -584,8 +602,19 @@ class ThermalSolver:
             return math.inf
         return _STABILITY_MARGIN / max_rate
 
-    def _raise_non_finite(self, ts: F64, t_lid: float, t_hs: float, *, liquid: bool = True) -> None:
-        bad = np.flatnonzero(~np.isfinite(self._t_new)) if liquid else np.zeros(0, dtype=np.int64)
+    def _spare(self, like: F64) -> F64:
+        """The spare full-size liquid buffer (allocated on first use, cells outside copied)."""
+        if self._out is None or self._out.shape != like.shape or self._out is like:
+            self._out = like.copy()
+        return self._out
+
+    def _raise_non_finite(
+        self, ts: F64, t_lid: float, t_hs: float, out_flat: F64 | None = None
+    ) -> None:
+        if out_flat is not None:
+            bad = np.flatnonzero(~np.isfinite(out_flat[self.net.liq_flat]))
+        else:
+            bad = np.zeros(0, dtype=np.int64)
         if bad.size:
             flat = int(self.net.liq_flat[bad[0]])
             ijk = tuple(int(v) for v in np.unravel_index(flat, self._shape))

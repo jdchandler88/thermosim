@@ -44,6 +44,9 @@ F_SRC_LIQ, F_SRC_SHELL, F_OUT, F_CONV, F_EVAP, F_LID, F_DRY, F_ST_LIQ, F_ST_SHEL
 N_FLOWS = 10
 N_INTERIOR_BLOCKS = 192  # blocks over the "interior" cell runs (fast path)
 N_GENERAL_BLOCKS = 64  # blocks over all other cells (general path)
+# The drivers loop over N_BLOCKS indices i; i % 4 == 3 selects general block i // 4, any other i
+# interior block 3 * (i // 4) + i % 4, so that a static split of the loop over threads gives
+# every thread the same mix of the cheap and the expensive blocks.
 N_BLOCKS = N_INTERIOR_BLOCKS + N_GENERAL_BLOCKS
 
 
@@ -340,7 +343,7 @@ def _interior_block(
             qp = q[p]
             de = dt * (flux + qp) + 0.0
             tn = tp + de / c
-            t_new[n] = tn
+            t_new[p] = tn
             stored += c * (tn - tp)
             src += qp * dt
             rr = sg6 / c
@@ -401,7 +404,7 @@ def _general_block(
         qp = q[p]
         de = dt * (flux + qp) + extra[n, 0]
         tn = tp + de / c
-        t_new[n] = tn
+        t_new[p] = tn
         stored += c * (tn - tp)
         src += qp * dt
         r = sg / c
@@ -424,30 +427,11 @@ def _reduce_ok(part: np.ndarray, dt: float, rate_limit: float) -> bool:
 
 
 @njit(cache=True, nogil=True)
-def _write_block(
-    b: int,
-    T: np.ndarray,
-    t_new: np.ndarray,
-    liq_flat: np.ndarray,
-    gen_n: np.ndarray,
-    run_start: np.ndarray,
-    run_comp: np.ndarray,
-    run_len: np.ndarray,
-    blk: np.ndarray,
-) -> None:
-    for r in range(blk[b], blk[b + 1]):
-        p0 = run_start[r]
-        n0 = run_comp[r]
-        for i in range(run_len[r]):
-            T[p0 + i] = t_new[n0 + i]
-    if b < N_GENERAL_BLOCKS:
-        n_gen = gen_n.shape[0]
-        chunk = (n_gen + N_GENERAL_BLOCKS - 1) // N_GENERAL_BLOCKS
-        lo = b * chunk
-        hi = min(lo + chunk, n_gen)
-        for m in range(lo, hi):
-            n = gen_n[m]
-            T[liq_flat[n]] = t_new[n]
+def copy_liquid(T: np.ndarray, out: np.ndarray, liq_flat: np.ndarray) -> None:
+    """T[p] = out[p] for every liquid cell p (the non-swapping way to commit a step)."""
+    for n in range(liq_flat.shape[0]):
+        p = liq_flat[n]
+        T[p] = out[p]
 
 
 @njit(cache=True, nogil=True, parallel=True)
@@ -477,20 +461,20 @@ def liquid_step_par(
     t_new: np.ndarray,
     part: np.ndarray,
 ) -> int:
-    """Forward-Euler update of every liquid cell, double buffered through ``t_new``.
+    """Forward-Euler update of every liquid cell from ``T`` into the flat buffer ``t_new``.
 
-    ``part`` (N_BLOCKS, 3) receives per-block sums of stored energy and source energy, and
-    the per-block maximum of sum(G)/C. The new temperatures are written into ``T`` only if
-    ``max(sum(G)/C) * dt <= rate_limit`` and the energy sums are finite; the return value
-    is 1 in that case and 0 otherwise (``T`` is then untouched). Doing the check and the
-    write-back in one call keeps the parallel regions back to back, which matters because
-    idle worker threads are slow to wake up.
+    ``t_new`` has the size of the grid (liquid cells at their flat index); ``T`` itself is never
+    written, so a failed step leaves the state untouched and a successful one is committed by
+    swapping the buffers or by `copy_liquid`. ``part`` (N_BLOCKS, 3) receives per-block sums of
+    stored energy and source energy, and the per-block maximum of sum(G)/C. The return value is
+    1 if ``max(sum(G)/C) * dt <= rate_limit`` and the energy sums are finite, 0 otherwise (the
+    contents of ``t_new`` are then meaningless).
     """
     nbi = N_INTERIOR_BLOCKS
-    for b in prange(N_BLOCKS):
-        if b < nbi:
+    for i in prange(N_BLOCKS):
+        if i % 4 != 3:
             _interior_block(
-                b,
+                (i // 4) * 3 + i % 4,
                 T,
                 cap,
                 q,
@@ -510,12 +494,11 @@ def liquid_step_par(
             )
         else:
             _general_block(
-                b - nbi, b, T, k, cap, q, liq_flat, nbr, nbr_area, extra, gen_n, dx, dt, t_new, part
-            )
+                i // 4, nbi + i // 4, T, k, cap, q, liq_flat, nbr, nbr_area, extra, gen_n, dx, dt,
+                t_new, part,
+            )  # fmt: skip
     if not _reduce_ok(part, dt, rate_limit):
         return 0
-    for b in prange(nbi):
-        _write_block(b, T, t_new, liq_flat, gen_n, run_start, run_comp, run_len, blk)
     return 1
 
 
@@ -548,10 +531,10 @@ def liquid_step_ser(
 ) -> int:
     """Serial twin of `liquid_step_par` (no threading layer involved)."""
     nbi = N_INTERIOR_BLOCKS
-    for b in range(N_BLOCKS):
-        if b < nbi:
+    for i in range(N_BLOCKS):
+        if i % 4 != 3:
             _interior_block(
-                b,
+                (i // 4) * 3 + i % 4,
                 T,
                 cap,
                 q,
@@ -571,12 +554,11 @@ def liquid_step_ser(
             )
         else:
             _general_block(
-                b - nbi, b, T, k, cap, q, liq_flat, nbr, nbr_area, extra, gen_n, dx, dt, t_new, part
-            )
+                i // 4, nbi + i // 4, T, k, cap, q, liq_flat, nbr, nbr_area, extra, gen_n, dx, dt,
+                t_new, part,
+            )  # fmt: skip
     if not _reduce_ok(part, dt, rate_limit):
         return 0
-    for b in range(nbi):
-        _write_block(b, T, t_new, liq_flat, gen_n, run_start, run_comp, run_len, blk)
     return 1
 
 
@@ -655,11 +637,12 @@ def liquid_max_rate_par(
 ) -> None:
     """Per-block maximum of sum(G)/C over liquid cells (``part[:, 2]``)."""
     nbi = N_INTERIOR_BLOCKS
-    for b in prange(N_BLOCKS):
-        if b < nbi:
-            _rate_interior_block(b, cap, part, run_comp, run_len, blk, sg6)
+    for i in prange(N_BLOCKS):
+        if i % 4 != 3:
+            _rate_interior_block((i // 4) * 3 + i % 4, cap, part, run_comp, run_len, blk, sg6)
         else:
-            _rate_general_block(b - nbi, b, k, cap, liq_flat, nbr, nbr_area, extra, gen_n, dx, part)
+            g = i // 4
+            _rate_general_block(g, nbi + g, k, cap, liq_flat, nbr, nbr_area, extra, gen_n, dx, part)
 
 
 @njit(cache=True, nogil=True)
@@ -680,8 +663,9 @@ def liquid_max_rate_ser(
 ) -> None:
     """Serial twin of `liquid_max_rate_par`."""
     nbi = N_INTERIOR_BLOCKS
-    for b in range(N_BLOCKS):
-        if b < nbi:
-            _rate_interior_block(b, cap, part, run_comp, run_len, blk, sg6)
+    for i in range(N_BLOCKS):
+        if i % 4 != 3:
+            _rate_interior_block((i // 4) * 3 + i % 4, cap, part, run_comp, run_len, blk, sg6)
         else:
-            _rate_general_block(b - nbi, b, k, cap, liq_flat, nbr, nbr_area, extra, gen_n, dx, part)
+            g = i // 4
+            _rate_general_block(g, nbi + g, k, cap, liq_flat, nbr, nbr_area, extra, gen_n, dx, part)
