@@ -19,7 +19,7 @@ from thermosim.core.protocols import (
 )
 from thermosim.core.types import RunMode, StopReason
 from thermosim.gui.fake_runner import FakeRunner, slice_dimensions
-from thermosim.gui.runner_factory import make_runner
+from thermosim.gui.runner_factory import make_fake_runner
 from thermosim.gui.snapshot_list import ListSnapshotStore
 
 
@@ -36,7 +36,7 @@ def _drain(runner: FakeRunner, timeout: float = 10.0) -> list:  # type: ignore[t
 
 
 def test_factory_returns_fake_runner_implementing_protocol() -> None:
-    runner = make_runner(short_scenario(), RunMode.FAST)
+    runner = make_fake_runner(short_scenario(), RunMode.FAST)
     assert isinstance(runner, FakeRunner)
     assert isinstance(runner, Runner)
     assert runner.state == RunnerState.IDLE

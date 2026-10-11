@@ -12,8 +12,8 @@ from PySide6.QtWidgets import QApplication
 
 from thermosim.config.io import load_scenario
 from thermosim.core.errors import ScenarioError
-from thermosim.gui.fake_runner import FakeRunner
 from thermosim.gui.main_window import MainWindow
+from thermosim.gui.runner_factory import make_fake_runner
 
 APP_NAME = "ThermoSim"
 ORG_NAME = "ThermoSim"
@@ -60,7 +60,7 @@ def parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     parser.add_argument(
         "--fake",
         action="store_true",
-        help="force the fake runner (synthetic data; the default until the real runner is wired)",
+        help="use the fake runner (synthetic data, no physics) for UI development",
     )
     return parser.parse_known_args(argv)
 
@@ -70,7 +70,7 @@ def main(argv: list[str] | None = None) -> int:
     args_list = list(sys.argv[1:] if argv is None else argv)
     args, qt_args = parse_args(args_list)
     app = create_application([sys.argv[0] if sys.argv else APP_NAME, *qt_args])
-    factory = (lambda sc, mode: FakeRunner(sc, mode)) if args.fake else None
+    factory = make_fake_runner if args.fake else None
     window = MainWindow(runner_factory=factory)
     if args.scenario is not None:
         try:

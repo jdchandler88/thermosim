@@ -116,22 +116,33 @@ def format_summary(summary: Summary, system: UnitSystem) -> str:
 
 
 class _ProgressBar:
+    """Progress report. A single \\r-updated line on a terminal; otherwise a new line about
+    every 10 % so logs and pipes stay readable."""
+
     def __init__(self, stream: TextIO) -> None:
         self.stream = stream
-        self.last = 0.0
+        self.tty = bool(getattr(stream, "isatty", lambda: False)())
+        self._next_pct = 0
+        self._wrote = False
 
     def __call__(self, ev: ProgressEvent) -> None:
         frac = min(1.0, ev.sim_time_s / ev.max_time_s) if ev.max_time_s > 0 else 0.0
-        filled = round(30 * frac)
-        self.stream.write(
-            f"\r[{'#' * filled}{'.' * (30 - filled)}] {100 * frac:5.1f}%  "
+        line = (
+            f"[{'#' * round(30 * frac)}{'.' * (30 - round(30 * frac))}] {100 * frac:5.1f}%  "
             f"sim {ev.sim_time_s / 60:7.1f} min  wall {ev.wall_time_s:6.1f} s"
         )
+        if self.tty:
+            self.stream.write("\r" + line)
+            self._wrote = True
+        elif 100 * frac >= self._next_pct:
+            self.stream.write(line + "\n")
+            self._next_pct = int(100 * frac / 10) * 10 + 10
         self.stream.flush()
 
     def done(self) -> None:
-        self.stream.write("\n")
-        self.stream.flush()
+        if self.tty and self._wrote:
+            self.stream.write("\n")
+            self.stream.flush()
 
 
 # ---------------------------------------------------------------------------- commands

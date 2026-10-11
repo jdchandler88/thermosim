@@ -7,14 +7,17 @@ from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QElapsedTimer, QSettings, Qt, QTimer
-from PySide6.QtGui import QAction, QCloseEvent
+from PySide6.QtGui import QAction, QCloseEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QAbstractSpinBox,
+    QApplication,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFileDialog,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
     QSlider,
@@ -24,9 +27,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from thermosim.config.io import example_scenarios, load_scenario, save_scenario
+from thermosim.config.io import (
+    example_scenarios,
+    load_scenario,
+    save_scenario,
+    scenario_from_toml,
+)
 from thermosim.config.schema import Scenario
-from thermosim.config.units import UnitSystem
+from thermosim.config.units import UnitSystem, to_display, unit_label
 from thermosim.core.errors import ModeError, ScenarioError
 from thermosim.core.protocols import (
     ErrorEvent,
@@ -41,7 +49,14 @@ from thermosim.core.types import RunMode, RunResult, Sample, Snapshot, SnapshotS
 from thermosim.gui import recording_adapter as rec
 from thermosim.gui.chart import Chart
 from thermosim.gui.editor import ScenarioEditor
-from thermosim.gui.formatting import DEFAULT_UNITS, fmt_clock
+from thermosim.gui.formatting import DEFAULT_UNITS, fmt_clock, fmt_quantity
+from thermosim.gui.integration import (
+    PREVIEW_CELL_SIZE_M,
+    PreflightController,
+    PreflightResult,
+    QuickEstimatePanel,
+    describe_preflight,
+)
 from thermosim.gui.measured_dialog import MeasuredImportDialog
 from thermosim.gui.runner_factory import make_runner
 from thermosim.gui.slice_view import SliceView
@@ -50,6 +65,7 @@ from thermosim.gui.summary_panel import SummaryPanel
 
 RunnerFactory = Callable[[Scenario, RunMode], Runner]
 _SLIDER_STEPS = 1000
+_SPEED_FACTOR = 1.25
 _PLAYBACK_SPEEDS = [("10x", 10.0), ("60x", 60.0), ("300x", 300.0), ("1000x", 1000.0)]
 
 
@@ -61,10 +77,26 @@ class MainWindow(QMainWindow):
         settings: QSettings | None = None,
         runner_factory: RunnerFactory | None = None,
         poll_interval_ms: int = 33,
+        preflight: bool | None = None,
     ) -> None:
+        """
+        Args:
+            settings: where the unit choice is remembered.
+            runner_factory: makes the runner for a run; default is the real simulator. A
+                custom factory (the fake runner, tests) skips the pre-run checks unless
+                `preflight` says otherwise.
+            poll_interval_ms: how often the runner's events are polled.
+            preflight: run the pre-run checks (domain build, estimate) in a worker thread
+                behind a progress dialog. Default: on exactly when the real runner is used.
+        """
         super().__init__()
         self._settings = settings if settings is not None else QSettings("ThermoSim", "ThermoSim")
         self._runner_factory: RunnerFactory = runner_factory or make_runner
+        self._preflight_enabled = (runner_factory is None) if preflight is None else preflight
+        self._preflight: PreflightController | None = None
+        self._preparing = False
+        self.last_preflight: PreflightResult | None = None
+        self._result_saved = True
         self._system: UnitSystem = self._load_units()
         self._path: Path | None = None
         self._runner: Runner | None = None
@@ -85,10 +117,13 @@ class MainWindow(QMainWindow):
         self.slice_view = SliceView(self._system)
         self.chart = Chart(self._system)
         self.summary = SummaryPanel(self._system)
+        self.quick_panel = QuickEstimatePanel(self._system)
+        self.quick_panel.requested.connect(self.run_quick_estimate)
 
         self._build_actions()
         self._build_toolbar()
         self._build_layout()
+        self._build_shortcuts()
 
         self._timer = QTimer(self)
         self._timer.setInterval(poll_interval_ms)
@@ -130,6 +165,12 @@ class MainWindow(QMainWindow):
         self.act_stop = self._action("Stop", self.stop_run)
         self.act_export = self._action("Export CSV", lambda: self.export_csv())
         self.act_import = self._action("Import measured", lambda: self.import_measured())
+        self.act_save_run = self._action(
+            "Save run...", lambda: self.save_run(), "Save the finished run (series, snapshots)"
+        )
+        self.act_open_run = self._action(
+            "Open run...", lambda: self.open_run(), "Open a saved run for playback"
+        )
         self.act_quit = self._action("Quit", self.close)
         menu = self.menuBar()
         file_menu = menu.addMenu("&File")
@@ -140,7 +181,10 @@ class MainWindow(QMainWindow):
             act = QAction(name.replace("_", " "), self)
             act.triggered.connect(lambda _c=False, n=name: self.load_example(n))
             self._examples_menu.addAction(act)
-        for act in (self.act_save, self.act_save_as, self.act_export, self.act_import):
+        for act in (self.act_save, self.act_save_as):
+            file_menu.addAction(act)
+        file_menu.addSeparator()
+        for act in (self.act_save_run, self.act_open_run, self.act_export, self.act_import):
             file_menu.addAction(act)
         file_menu.addSeparator()
         file_menu.addAction(self.act_quit)
@@ -245,12 +289,51 @@ class MainWindow(QMainWindow):
         self.editor.setMinimumWidth(430)
         hsplit.addWidget(self.editor)
         hsplit.addWidget(center)
-        hsplit.addWidget(self.summary)
+        right = QWidget()
+        rl = QVBoxLayout(right)
+        rl.setContentsMargins(0, 0, 0, 0)
+        rl.addWidget(self.quick_panel)
+        rl.addWidget(self.summary, 1)
+        hsplit.addWidget(right)
         hsplit.setStretchFactor(0, 0)
         hsplit.setStretchFactor(1, 1)
         hsplit.setStretchFactor(2, 0)
         hsplit.setSizes([440, 760, 320])
         self.setCentralWidget(hsplit)
+
+    def _build_shortcuts(self) -> None:
+        """Space pauses/resumes; Up/Down change power by 5 %; + and - change the speed."""
+        self._shortcuts: list[QShortcut] = []
+        bindings: list[tuple[str, Callable[[], Any]]] = [
+            ("Space", self.pause_resume),
+            ("Up", lambda: self.adjust_power(+5)),
+            ("Down", lambda: self.adjust_power(-5)),
+            ("+", lambda: self.adjust_speed(_SPEED_FACTOR)),
+            ("=", lambda: self.adjust_speed(_SPEED_FACTOR)),
+            ("-", lambda: self.adjust_speed(1.0 / _SPEED_FACTOR)),
+        ]
+        for key, fn in bindings:
+            sc = QShortcut(QKeySequence(key), self)
+            sc.setContext(Qt.ShortcutContext.WindowShortcut)
+            sc.activated.connect(lambda fn=fn: self._shortcut(fn))
+            self._shortcuts.append(sc)
+
+    def _shortcut(self, fn: Callable[[], Any]) -> None:
+        """Run a shortcut action, unless the user is typing in a text field."""
+        focus = QApplication.focusWidget()
+        if isinstance(focus, QLineEdit | QAbstractSpinBox):
+            return
+        fn()
+
+    def adjust_power(self, delta_percent: int) -> None:
+        """Change the power slider (and so the running command) by `delta_percent`."""
+        if self.power_slider.isEnabled():
+            self.power_slider.setValue(min(max(self.power_slider.value() + delta_percent, 0), 100))
+
+    def adjust_speed(self, factor: float) -> None:
+        """Multiply the real-time speed by `factor`."""
+        if self.speed_spin.isEnabled():
+            self.speed_spin.setValue(min(max(self.speed_spin.value() * factor, 0.1), 100.0))
 
     # ------------------------------------------------------------------ state helpers
     @property
@@ -261,6 +344,20 @@ class MainWindow(QMainWindow):
     def is_active(self) -> bool:
         """True from start until the run's FinishedEvent/ErrorEvent has been handled."""
         return self._active
+
+    @property
+    def is_preparing(self) -> bool:
+        """True while the pre-run checks (progress dialog) are in progress."""
+        return self._preparing
+
+    @property
+    def preflight_controller(self) -> PreflightController | None:
+        return self._preflight
+
+    @property
+    def result_saved(self) -> bool:
+        """False for a finished run that has not been saved with 'Save run...'."""
+        return self._result_saved
 
     @property
     def runner(self) -> Runner | None:
@@ -305,7 +402,7 @@ class MainWindow(QMainWindow):
     def _update_actions(self) -> None:
         valid = self.editor.is_valid()
         active = self._active
-        run_ok = valid and not active
+        run_ok = valid and not active and not self._preparing
         tip = "" if valid else f"Fix the setup first:\n{self.editor.error_message()}"
         for act, base in (
             (self.act_run_fast, "Run in fast mode"),
@@ -321,9 +418,13 @@ class MainWindow(QMainWindow):
         self.speed_spin.setEnabled(rt)
         self.power_slider.setEnabled(rt)
         self.editor.setEnabled(not active)
-        self.act_new.setEnabled(not active)
-        self.act_open.setEnabled(not active)
-        self._examples_menu.setEnabled(not active)
+        busy = active or self._preparing
+        self.act_new.setEnabled(not busy)
+        self.act_open.setEnabled(not busy)
+        self.act_open_run.setEnabled(not busy)
+        self.act_save_run.setEnabled(self._result is not None and not active)
+        self.quick_panel.button.setEnabled(valid and not active)
+        self._examples_menu.setEnabled(not busy)
         have_samples = bool(self._samples)
         csv_ok = rec.export_csv_available()
         self.act_export.setEnabled(csv_ok and have_samples)
@@ -366,6 +467,7 @@ class MainWindow(QMainWindow):
         self.slice_view.set_system(system)
         self.chart.set_system(system)
         self.summary.set_system(system)
+        self.quick_panel.set_system(system)
 
     # ------------------------------------------------------------------ files
     def _maybe_save(self) -> bool:
@@ -384,6 +486,22 @@ class MainWindow(QMainWindow):
             return self.save()
         return reply == QMessageBox.StandardButton.Discard
 
+    def _confirm_discard_result(self) -> bool:
+        """Ask before throwing away a finished run that was not saved. True to go ahead."""
+        if self._result is None or self._result_saved or self._active:
+            return True
+        reply = QMessageBox.question(
+            self,
+            "Unsaved run",
+            "The last run has not been saved. Save it before continuing?",
+            QMessageBox.StandardButton.Save
+            | QMessageBox.StandardButton.Discard
+            | QMessageBox.StandardButton.Cancel,
+        )
+        if reply == QMessageBox.StandardButton.Save:
+            return self.save_run()
+        return bool(reply == QMessageBox.StandardButton.Discard)
+
     def _reset_run_views(self, scenario: Scenario | None) -> None:
         self._samples = []
         self._store = ListSnapshotStore()
@@ -397,6 +515,7 @@ class MainWindow(QMainWindow):
         self._update_scrubber_range()
         self.time_label.setText("t = --:--")
         self.chart.set_cursor(None)
+        self.quick_panel.reset()
 
     def load_scenario(self, scenario: Scenario, path: Path | None = None) -> None:
         """Load `scenario` into the editor and reset the run views."""
@@ -413,20 +532,20 @@ class MainWindow(QMainWindow):
         self._update_actions()
 
     def new_scenario(self, force: bool = False) -> bool:
-        if not force and not self._maybe_save():
+        if not force and not (self._maybe_save() and self._confirm_discard_result()):
             return False
         template = example_scenarios()["small_pot_stove"].model_copy(update={"name": "New setup"})
         self.load_scenario(template, None)
         return True
 
     def load_example(self, name: str) -> bool:
-        if not self._maybe_save():
+        if not (self._maybe_save() and self._confirm_discard_result()):
             return False
         self.load_scenario(example_scenarios()[name], None)
         return True
 
     def open_file(self, path: Path | str | None = None) -> bool:
-        if not self._maybe_save():
+        if not (self._maybe_save() and self._confirm_discard_result()):
             return False
         if path is None:
             chosen, _ = QFileDialog.getOpenFileName(
@@ -470,7 +589,9 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:
         if self._active and self._runner is not None:
             self._runner.stop()
-        if not self._maybe_save():
+        if self._preflight is not None and self._preparing:
+            self._preflight.cancel()
+        if not (self._maybe_save() and self._confirm_discard_result()):
             event.ignore()
             return
         self._timer.stop()
@@ -479,14 +600,17 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ running
     def start_run(self, mode: RunMode | None = None) -> bool:
-        if self._active:
+        """Start a run. With the real simulator this first runs the pre-run checks (a worker
+        thread behind a cancellable progress dialog); the run begins when they pass."""
+        if self._active or self._preparing:
             return False
         scenario = self.editor.scenario()
         if scenario is None:
             self.statusBar().showMessage("The setup has errors; fix them before running.", 5000)
             return False
+        if not self._confirm_discard_result():
+            return False
         mode = mode or self._run_mode
-        self._run_mode = mode
         speed = self.speed_spin.value() if mode == RunMode.REALTIME else 1.0
         sim = scenario.simulation.model_copy(
             update={
@@ -497,6 +621,75 @@ class MainWindow(QMainWindow):
             }
         )
         run_scenario = scenario.model_copy(update={"simulation": sim})
+        if not self._preflight_enabled:
+            self._launch(run_scenario, mode)
+            return True
+        self._preparing = True
+        controller = PreflightController(self, run_scenario)
+        self._preflight = controller
+        controller.done.connect(lambda r: self._on_preflight_done(r, run_scenario, mode))
+        self._update_actions()
+        self.statusBar().showMessage("Checking the setup...")
+        controller.start()
+        return True
+
+    def _on_preflight_done(
+        self, result: PreflightResult, scenario: Scenario, mode: RunMode
+    ) -> None:
+        self._preparing = False
+        self.last_preflight = result
+        bar = self.statusBar()
+        if result.cancelled:
+            bar.showMessage("Run cancelled.", 5000)
+        elif not result.ok:
+            self.editor.show_external_error(result.error_field or "", result.error)
+            bar.showMessage(f"Cannot run: {result.error}", 10000)
+        else:
+            bar.showMessage(describe_preflight(result), 10000)
+            choice = "run"
+            if result.is_long:
+                choice = self._ask_long_run(result)
+            if choice == "preview" and scenario.simulation.cell_size_m >= PREVIEW_CELL_SIZE_M:
+                choice = "run"  # already at or coarser than the preview size
+            if choice == "preview":
+                self._use_preview_cell_size()
+                self._update_actions()
+                self.start_run(mode)
+                return
+            if choice == "run":
+                self._launch(scenario, mode)
+        self._update_actions()
+
+    def _ask_long_run(self, result: PreflightResult) -> str:
+        """Warn about a long run. Returns 'run', 'preview' or 'cancel'."""
+        minutes = (result.est_wall_s or 0.0) / 60.0
+        box = QMessageBox(self)
+        box.setWindowTitle("Long run")
+        box.setText(
+            f"This run is estimated to take about {minutes:.0f} minutes "
+            f"({result.liquid_cells:,} liquid cells)."
+        )
+        shown = float(to_display(PREVIEW_CELL_SIZE_M, "length", self._system))
+        box.setInformativeText(
+            "A cell size of "
+            f"{fmt_quantity(shown, 'length', self._system)} {unit_label('length', self._system)}"
+            " gives a much quicker preview."
+        )
+        preview = box.addButton("Use preview cell size", QMessageBox.ButtonRole.AcceptRole)
+        run = box.addButton("Run anyway", QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is preview:
+            return "preview"
+        return "run" if clicked is run else "cancel"
+
+    def _use_preview_cell_size(self) -> None:
+        self.editor.set_value_si("simulation.cell_size_m", PREVIEW_CELL_SIZE_M)
+
+    def _launch(self, run_scenario: Scenario, mode: RunMode) -> None:
+        """Reset the views and start the runner."""
+        self._run_mode = mode
         self._stop_playback()
         self._reset_run_views(run_scenario)
         self.slice_view.set_scenario(run_scenario)
@@ -512,7 +705,21 @@ class MainWindow(QMainWindow):
         self._timer.start()
         self._update_actions()
         self._update_status()
-        return True
+
+    def run_quick_estimate(self) -> None:
+        """Fill the quick-estimate panel from the lumped model (about 0.1 s)."""
+        from thermosim.validation.lumped import quick_estimate
+
+        scenario = self.editor.scenario()
+        if scenario is None:
+            self.quick_panel.show_error("fix the setup errors first.")
+            return
+        try:
+            seconds = quick_estimate(scenario)
+        except Exception as exc:
+            self.quick_panel.show_error(str(exc))
+            return
+        self.quick_panel.show_result(seconds, scenario.target.temp_K)
 
     def pause_resume(self) -> None:
         r = self._runner
@@ -539,6 +746,10 @@ class MainWindow(QMainWindow):
     def _on_power(self, value: int) -> None:
         self.power_label.setText(f"{value}%")
         if self._runner is not None and self._active and self._run_mode == RunMode.REALTIME:
+            sim_t = self._last_progress.sim_time_s if self._last_progress else 0.0
+            if self._samples:
+                sim_t = max(sim_t, self._samples[-1].t)
+            self.chart.add_command_marker(sim_t, value / 100.0)
             try:
                 self._runner.set_power_command(value / 100.0)
             except ModeError:
@@ -594,6 +805,10 @@ class MainWindow(QMainWindow):
         self._update_actions()
 
     def _on_finished(self, result: RunResult) -> None:
+        self._result_saved = False
+        self._display_result(result)
+
+    def _display_result(self, result: RunResult) -> None:
         self._result = result
         self._samples = list(result.samples)
         self._store = result.snapshots
@@ -681,6 +896,58 @@ class MainWindow(QMainWindow):
             self._stop_playback()
         self._show_snapshot(self._store.nearest(self._play_t))
         self._set_scrubber_to(self._play_t)
+
+    # ------------------------------------------------------------------ saved runs
+    def save_run(self, path: Path | str | None = None) -> bool:
+        """Write the finished run to a directory (summary, series, snapshots, setup)."""
+        from thermosim.recording import save_run as write_run
+
+        if self._result is None or self._active:
+            return False
+        if path is None:
+            chosen, _ = QFileDialog.getSaveFileName(
+                self, "Save run (a folder is created)", "", "Run folder"
+            )
+            if not chosen:
+                return False
+            path = chosen
+        try:
+            write_run(self._result, Path(path))
+        except OSError as exc:
+            QMessageBox.warning(self, "Cannot save run", str(exc))
+            return False
+        self._result_saved = True
+        self.statusBar().showMessage(f"Run saved to {path}", 5000)
+        return True
+
+    def open_run(self, path: Path | str | None = None) -> bool:
+        """Load a saved run into playback mode: its setup, series and snapshots, no runner."""
+        from thermosim.recording import load_run
+
+        if self._active or self._preparing:
+            return False
+        if not (self._maybe_save() and self._confirm_discard_result()):
+            return False
+        if path is None:
+            chosen = QFileDialog.getExistingDirectory(self, "Open run folder")
+            if not chosen:
+                return False
+            path = chosen
+        try:
+            result = load_run(Path(path))
+            scenario = scenario_from_toml(result.scenario_toml)
+        except (OSError, ValueError, KeyError, ScenarioError) as exc:
+            QMessageBox.warning(self, "Cannot open run", str(exc))
+            return False
+        self._stop_playback()
+        self._runner = None
+        self.load_scenario(scenario, None)
+        self._display_result(result)
+        self._result_saved = True
+        self.statusBar().showMessage(f"Opened run {path}", 5000)
+        self._update_actions()
+        self._update_status()
+        return True
 
     # ------------------------------------------------------------------ export / import
     def export_csv(self, path: Path | str | None = None) -> bool:

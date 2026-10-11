@@ -73,3 +73,48 @@ def fmt_mass(kg: float, system: UnitSystem) -> str:
     if system == "us":
         return f"{kg / _KG_PER_LB:.3f} lb"
     return f"{kg:.3f} kg"
+
+
+# Decimal places used when showing an editable quantity, per (quantity, unit system).
+_DECIMALS: dict[tuple[str, str], int] = {
+    ("temperature", "metric"): 1,
+    ("temperature", "us"): 1,
+    ("temperature_delta", "metric"): 1,
+    ("temperature_delta", "us"): 1,
+    ("temperature_rate", "metric"): 2,
+    ("temperature_rate", "us"): 2,
+    ("length", "metric"): 1,
+    ("length", "us"): 3,
+    ("altitude", "metric"): 0,
+    ("altitude", "us"): 0,
+    ("area", "metric"): 1,
+    ("area", "us"): 2,
+    ("volume", "metric"): 2,
+    ("volume", "us"): 3,
+    ("power", "metric"): 3,
+    ("power", "us"): 0,
+    ("speed", "metric"): 2,
+    ("speed", "us"): 2,
+    ("time", "metric"): 1,
+    ("time", "us"): 1,
+}
+
+
+def fmt_quantity(value: float, quantity: str, system: UnitSystem) -> str:
+    """Text for an editor field: a display-unit value with a sensible number of decimals.
+
+    Trailing zeros are dropped. Values too small for the fixed decimals keep 3 significant
+    digits instead, so a small thickness never shows as 0. Quantities without an entry here
+    (conductivities, densities, fractions, ...) use 4 significant digits.
+    """
+    if not math.isfinite(value):
+        return str(value)
+    decimals = _DECIMALS.get((quantity, system))
+    if decimals is None:
+        return f"{value:.4g}"
+    if value != 0.0 and abs(value) < 10.0 ** (2 - decimals):
+        return f"{value:.3g}"
+    text = f"{value:.{decimals}f}"
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return "0" if text in ("-0", "") else text

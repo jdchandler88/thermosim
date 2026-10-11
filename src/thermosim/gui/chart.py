@@ -61,6 +61,7 @@ class Chart(QWidget):
         self._probe_curves: dict[str, Any] = {}
         self._measured: tuple[np.ndarray, np.ndarray, str] | None = None
         self._target_K: float | None = None
+        self._markers: list[Any] = []
 
         self._plot = pg.PlotWidget(axisItems={"bottom": TimeAxis(orientation="bottom")})
         pi = self._plot.getPlotItem()
@@ -165,6 +166,9 @@ class Chart(QWidget):
             self._legend.removeItem(curve)
         self._probe_curves.clear()
         self._probes.clear()
+        for marker in self._markers:
+            self._pi.removeItem(marker)
+        self._markers.clear()
         if scenario is not None:
             self._target_K = scenario.target.temp_K
             for i, probe in enumerate(scenario.probes):
@@ -221,6 +225,25 @@ class Chart(QWidget):
         self._measured = None
         self._measured_item.setVisible(False)
         self._redraw()
+
+    @property
+    def n_command_markers(self) -> int:
+        return len(self._markers)
+
+    def add_command_marker(self, t_s: float, fraction: float) -> None:
+        """Mark a change of the power command at simulated time `t_s` straight away, without
+        waiting for the next recorded sample (which shows the resulting delivered power)."""
+        line = pg.InfiniteLine(
+            pos=t_s,
+            angle=90,
+            pen=pg.mkPen((120, 220, 120), width=1, style=Qt.PenStyle.DotLine),
+            label=f"{round(fraction * 100)}%",
+            labelOpts={"position": 0.92, "color": (120, 220, 120), "movable": False},
+        )
+        self._pi.addItem(line)
+        self._markers.append(line)
+        if len(self._markers) > 40:
+            self._pi.removeItem(self._markers.pop(0))
 
     def set_cursor(self, t_s: float | None) -> None:
         if t_s is None:

@@ -54,7 +54,7 @@ from thermosim.config.units import (
     unit_label,
 )
 from thermosim.core.errors import ScenarioError
-from thermosim.gui.formatting import DEFAULT_UNITS
+from thermosim.gui.formatting import DEFAULT_UNITS, fmt_quantity
 
 Path = tuple[str | int, ...]
 
@@ -139,10 +139,6 @@ def _strip_optional(ann: Any) -> tuple[Any, bool]:
 
 def _is_model(tp: Any) -> bool:
     return isclass(tp) and issubclass(tp, BaseModel)
-
-
-def _fmt_number(value: float) -> str:
-    return f"{value:.6g}"
 
 
 def _title(info: FieldInfo, name: str) -> str:
@@ -262,6 +258,8 @@ class ScenarioEditor(QWidget):
         outer.addWidget(self._name_slot)
         self._banner = QLabel()
         self._banner.setWordWrap(True)
+        self._banner.setTextFormat(Qt.TextFormat.PlainText)
+        self._banner.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self._banner.setStyleSheet(
             "QLabel { color: #b52b27; background: rgba(217,83,79,0.15); padding: 4px; }"
         )
@@ -317,6 +315,30 @@ class ScenarioEditor(QWidget):
 
     def paths(self) -> list[str]:
         return list(self._widgets)
+
+    def show_external_error(self, path: str, message: str) -> None:
+        """Mark the field at dotted `path` (e.g. 'liquid.fill_height_m') with an error found
+        outside schema validation (geometry checks), and show `message` in the banner.
+
+        The marking disappears at the next edit, which re-validates the form.
+        """
+        loc: list[str | int] = [int(p) if p.isdigit() else p for p in path.split(".") if p]
+        found = self._find_target(tuple(loc))
+        if found is not None:
+            target, rest = found
+            target.mark(message, rest)
+        self._banner.setText(message)
+        self._banner.setVisible(True)
+        self._mark_tabs([(tuple(loc), message)])
+
+    def set_value_si(self, path: str, value: float) -> None:
+        """Set a numeric field to an exact SI value (as if typed, but without display rounding)."""
+        key = tuple(int(p) if p.isdigit() else p for p in path.split("."))
+        self._set(key, float(value))
+        for ref_key, fn in self._refreshers:
+            if ref_key == path:
+                fn()
+        self._edited()
 
     def set_field_text(self, path: str, text: str) -> None:
         """Type `text` into a text/number field as a user would."""
@@ -535,7 +557,7 @@ class ScenarioEditor(QWidget):
                 text = ""
             elif isinstance(value, int | float):
                 shown = to_display(float(value), quantity, self._system)  # type: ignore[arg-type]
-                text = _fmt_number(float(shown))
+                text = fmt_quantity(float(shown), quantity, self._system)
             else:
                 text = str(value)
             edit.blockSignals(True)
@@ -842,8 +864,10 @@ class ScenarioEditor(QWidget):
                 for c, col in enumerate(cols):
                     v = cell_value(row, col)
                     if col.quantity is not None and isinstance(v, int | float):
-                        text = _fmt_number(
-                            float(to_display(float(v), col.quantity, self._system))  # type: ignore[arg-type]
+                        text = fmt_quantity(
+                            float(to_display(float(v), col.quantity, self._system)),  # type: ignore[arg-type]
+                            col.quantity,
+                            self._system,
                         )
                     else:
                         text = "" if v is None else str(v)
