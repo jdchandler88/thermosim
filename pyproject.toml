@@ -1,0 +1,50 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "thermosim"
+version = "0.1.0"
+description = "Thermal simulation of a brewing or heating vessel (ThermoSim)"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.0",
+    "numba>=0.60",
+    "scipy>=1.13",
+    "pydantic>=2.7",
+    "tomli-w>=1.0",
+    "PySide6>=6.7",
+    "pyqtgraph>=0.13.7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-qt",
+    "ruff",
+    "mypy",
+    "hypothesis",
+]
+
+[project.scripts]
+thermosim = "thermosim.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/thermosim"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+# docs/ holds the plan (markdown with code blocks); ThermoSim/ is the legacy Java tree.
+extend-exclude = ["docs", "ThermoSim"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "NPY", "RUF"]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+check_untyped_defs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

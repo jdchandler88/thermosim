@@ -25,3 +25,15 @@ hs_err_pid*
 /ThermoSim/build/
 /ThermoSim/dist/
 /ThermoSim/target/
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+/build/
+/dist/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
