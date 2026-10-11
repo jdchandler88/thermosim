@@ -55,39 +55,98 @@ must respect:
   unchanged. Energy accounting must still close; advection is conservative on
   the MAC grid with flux-form temperature advection.
 
-## WP20: Backend spike (S–M)
+## Decision (coordinator, Phase 2 kickoff)
 
-- **Goal:** choose the compute backend for the flow solver on the user's
-  hardware.
-- **Candidates** (target: the GTX 1060 on Windows):
-  - Numba CPU (the baseline and required fallback);
-  - Numba CUDA (custom kernels in the same language as Phase 1);
-  - CuPy (raw kernels plus array operations);
-  - Taichi (check that the project is still maintained and supports Pascal);
-  - PyTorch (check the newest build that still supports compute capability
-    6.1).
-- **Task:**
-  - Implement the same minimal 3D masked-grid pressure Poisson solve (a
-    cylinder mask, 64³ and 128³) and one semi-Lagrangian advection step in
-    each viable candidate.
-  - Measure time per step, the effort to write custom kernels, install
-    friction on Windows, and determinism.
-- **Deliverable:** `docs/phase2-backend.md` with a recommendation, and the
-  spike code in `spikes/phase2/` (not shipped).
+- **The development container has no GPU.** GPU code can be written and checked
+  here only with Numba's CUDA simulator (`NUMBA_ENABLE_CUDASIM=1`, slow but
+  correct). Real GPU timing must run on the user's Windows PC.
+- **Backend: Numba**, with **Numba CPU** first and **Numba CUDA** (`numba-cuda`,
+  CUDA 12.x wheels) for the GTX 1060 later. Same language and toolchain as
+  Phase 1; the kernels are written point-wise so the CPU `prange` kernels port
+  to `@cuda.jit` almost line for line. The other candidates (CuPy, Taichi,
+  PyTorch) are dropped: none is needed, and each adds a heavy dependency with
+  uncertain Pascal support.
+- **Coupling design:** the flow solver does **not** replace the Phase 1 thermal
+  solver. Each step it (1) advances the velocity field using the current
+  temperatures (buoyancy), then (2) computes the **advective heat flux** across
+  every liquid face from that velocity, and returns it as an extra per-cell
+  source array (W, summing to zero over the domain). The model adds it to
+  `q_cells` and runs the existing `ThermalSolver` with the **molecular**
+  conductivity (plus an optional subgrid turbulent conductivity). Shell, lid,
+  losses and energy accounting are all reused unchanged, and energy still
+  balances to round-off because the advective fluxes cancel in pairs.
 
-## WP21: Flow solver core (XL)
+## WP20: GPU check script (S)
 
-- **Owns:** `src/thermosim/flow/**`, `tests/flow/**`.
-- **Interface:** `FlowSolver(domain).step(state: FlowState, coeffs, dt) -> EnergyFlows`.
-  It uses the same `ThermalState` plus velocity and pressure arrays.
-- **Validation (required):**
-  1. Lid-driven cavity at Re = 100 and 1000 against Ghia et al. (1982)
-     centerline profiles (2D or a thin-3D test).
-  2. Differentially heated square cavity at Ra = 10³–10⁶ against
-     de Vahl Davis (1983) Nusselt numbers, within 2–5%.
-  3. Rayleigh–Bénard onset near Ra_c ≈ 1708 between rigid plates.
-  4. Divergence after projection below a tolerance (1e-8 relative).
-  5. Energy conservation as in Phase 1.
+- **Owns:** `benchmarks/gpu/**`, the optional dependency group `gpu` in
+  `pyproject.toml` (`numba-cuda[cu12]`), `docs/phase2-backend.md`.
+- **Task:** a script the user runs on Windows, `uv run --extra gpu python
+  benchmarks/gpu/gpu_check.py`, that:
+  1. reports whether CUDA is usable (device name, compute capability, memory,
+     driver and runtime versions) with clear advice if not (driver too old,
+     wrong wheel, no NVIDIA GPU);
+  2. runs a correctness test of a small float32 3-D masked stencil kernel
+     against a NumPy reference;
+  3. times, on the GPU and on the CPU (Numba `prange`), a masked 7-point
+     Jacobi sweep and a masked CG iteration at 64³, 96³ and 128³;
+  4. prints a short, copy-pasteable summary.
+- It must also run here under `NUMBA_ENABLE_CUDASIM=1` (tests do that at 16³).
+- `docs/phase2-backend.md` records the decision above and how to read the
+  script's output.
+
+## WP21: Flow solver core, CPU (XL)
+
+- **Owns:** `src/thermosim/flow/**`, `tests/flow/**`, `docs/physics/flow.md`.
+- **Files:** `flow/grid.py` (MAC face masks and index tables built from
+  `LiquidGrid`), `flow/kernels.py` (Numba CPU kernels, point-wise style, no
+  Python objects inside, float64 for now with a dtype switch), `flow/poisson.py`
+  (matrix-free pressure solve), `flow/solver.py`.
+- **API:**
+  - `FlowState`: `u`, `v`, `w` face velocities (m/s, MAC layout, shapes
+    `(nx+1, ny, nz)` etc.), `p` cell pressure (Pa / ρ₀ kinematic is fine;
+    document it).
+  - `FlowSolver(domain, *, smagorinsky_cs=0.0, dtype=np.float64)`
+  - `.initial_state() -> FlowState` (fluid at rest)
+  - `.max_dt(state, nu) -> float` (CFL ≤ 0.5 and any explicit-viscosity limit)
+  - `.step(state, T_liquid, props, dt) -> FlowStepResult`, where `props` gives
+    ρ₀, β, ν, cp at the bulk temperature, and the result holds
+    `q_adv` (nx, ny, nz) W per cell (sum ≈ 0 to round-off), optional
+    `k_turb` (nx, ny, nz) W/(m K), `max_divergence`, `poisson_iterations`.
+  - `slice_velocity(state, j) -> (u_slice, w_slice)` at cell centres, for
+    `Snapshot.velocity_u/w`.
+- **Numerics:**
+  - Boussinesq buoyancy `g β (T − T_bulk)` on w-faces.
+  - Momentum advection: semi-Lagrangian (robust, CFL-tolerant) or 2nd-order
+    upwind; explicit viscosity (ν + ν_t).
+  - Pressure: matrix-free preconditioned CG on the masked cell Laplacian with
+    Neumann walls (fix the null space: zero-mean pressure). Jacobi
+    preconditioner at minimum; a geometric multigrid preconditioner is a
+    stretch goal. Converge to a relative residual of 1e-6 (configurable).
+  - Projection makes the discrete divergence of every liquid cell ≤ 1e-8
+    relative.
+  - Walls: no-slip (face velocity 0 on any face touching non-liquid, plus
+    wall-tangential no-slip via ghost values). Free surface: flat, w = 0,
+    free-slip for u and v.
+  - Heat advection flux: flux form with a TVD limiter (van Leer or minmod),
+    ρ₀ cp T u across each open face, so every face flux leaves one cell and
+    enters its neighbour.
+  - Smagorinsky ν_t = (C_s Δ)² |S| when C_s > 0; k_turb = ρ cp ν_t / Pr_t
+    (Pr_t = 0.85).
+- **Validation (required tests):**
+  1. Divergence after projection ≤ 1e-8 relative on a random field in a
+     cylinder mask.
+  2. Lid-driven cavity at Re = 100 (thin 3-D box or periodic-y; a test-only
+     moving-lid boundary hook is fine) against Ghia et al. (1982) centreline
+     u-velocity within 5%.
+  3. Differentially heated square cavity at Ra = 10³ and 10⁴ (2-D-like thin
+     box, Pr = 0.71) against de Vahl Davis (1983) average Nusselt number
+     within 5%. Ra = 10⁵ as a slow test if feasible.
+  4. Heat advection conserves energy: Σ q_adv = 0 to 1e-12 relative to its
+     absolute sum; a uniform temperature produces no flow.
+  5. Rayleigh–Bénard: a box heated from below starts convecting above
+     Ra ≈ 1708 and stays still well below it (slow test acceptable).
+- **Performance (report only):** ms per step and Poisson iterations at 32³,
+  64³ and the 40 L kettle at 20 mm and 10 mm, single and multi-threaded.
 
 ## WP22: Integration and visualization (M)
 
