@@ -96,7 +96,6 @@ src/thermosim/
 tests/<area>/             # each WP owns tests/<its area>/
 benchmarks/               # WP10
 docs/plan/                # coordinator
-ThermoSim/                # legacy Java — do not touch; WP11 deletes it at the end (REQUIREMENTS T5)
 ```
 
 **Ownership rule:** an agent edits only the paths its work-package file lists

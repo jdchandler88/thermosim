@@ -30,14 +30,17 @@ dev = [
 [project.scripts]
 thermosim = "thermosim.cli:main"
 
+[project.gui-scripts]
+thermosim-gui = "thermosim.gui.app:main"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/thermosim"]
 
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-# docs/ holds the plan (markdown with code blocks); ThermoSim/ is the legacy Java tree.
-extend-exclude = ["docs", "ThermoSim"]
+# docs/ holds the plan (markdown with code blocks).
+extend-exclude = ["docs"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "NPY", "RUF"]
