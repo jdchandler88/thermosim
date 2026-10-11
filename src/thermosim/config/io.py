@@ -5,6 +5,13 @@ read goes through `Scenario` validation. All errors are raised as `ScenarioError
 `load_scenario` names the file in the message.
 
 Example scenarios are package data in `thermosim/scenarios/*.toml`.
+
+Error behaviour (decision CCR3): the constructors `Scenario(...)` and
+`Scenario.model_validate(...)` may raise pydantic `ValidationError` for field-level problems
+(types, bounds, unknown keys, unknown materials). Cross-field rules raise `ScenarioError`
+directly. The I/O functions in this module (`scenario_from_toml`, `load_scenario`,
+`example_scenarios`) convert every failure to `ScenarioError`. `load_scenario` also names
+the file.
 """
 
 from __future__ import annotations

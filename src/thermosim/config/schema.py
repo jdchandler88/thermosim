@@ -34,7 +34,9 @@ from thermosim.core.types import RunMode
 Quantity = Literal[
     "temperature",
     "temperature_delta",
+    "temperature_rate",
     "length",
+    "altitude",
     "area",
     "volume",
     "power",
@@ -512,7 +514,7 @@ class Atmosphere(BaseModel):
         le=1.0,
     )
     altitude_m: float = _num(
-        "length",
+        "altitude",
         "Altitude",
         "Altitude above sea level in metres. Sets air pressure, boiling point and evaporation.",
         0.0,
@@ -648,10 +650,10 @@ class SimSettings(BaseModel):
         le=86400.0,
     )
     plateau_rate_K_per_min: float = _num(
-        "temperature_delta",
+        "temperature_rate",
         "Plateau rate",
-        "Heating rate below which the liquid counts as levelled off, in K per minute. "
-        "Stored as a temperature difference per minute.",
+        "Heating rate below which the liquid counts as levelled off. Stored in K per minute; "
+        "shown as \u00b0C/min or \u00b0F/min.",
         0.05,
         ge=0.0,
         le=10.0,

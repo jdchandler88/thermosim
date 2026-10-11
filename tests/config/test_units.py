@@ -57,9 +57,21 @@ def test_speed_mph() -> None:
     assert to_display(1.0, "speed", "us") == pytest.approx(2.23694, rel=1e-5)
 
 
-def test_time_is_minutes_in_both_systems() -> None:
-    assert to_display(600.0, "time", "metric") == pytest.approx(10.0)
-    assert to_display(600.0, "time", "us") == pytest.approx(10.0)
+def test_time_is_seconds_in_both_systems() -> None:
+    assert to_display(600.0, "time", "metric") == pytest.approx(600.0)
+    assert to_display(600.0, "time", "us") == pytest.approx(600.0)
+
+
+def test_temperature_rate_and_altitude() -> None:
+    # K/min stays the same number in degC/min; US multiplies by 1.8 (no offset).
+    assert to_display(0.05, "temperature_rate", "metric") == pytest.approx(0.05)
+    assert to_display(0.05, "temperature_rate", "us") == pytest.approx(0.09)
+    assert unit_label("temperature_rate", "metric") == "\u00b0C/min"
+    assert unit_label("temperature_rate", "us") == "\u00b0F/min"
+    assert to_display(1000.0, "altitude", "metric") == pytest.approx(1000.0)
+    assert to_display(1000.0, "altitude", "us") == pytest.approx(3280.8399, rel=1e-6)
+    assert unit_label("altitude", "us") == "ft"
+    assert unit_label("altitude", "metric") == "m"
 
 
 def test_engineering_units() -> None:
@@ -110,8 +122,8 @@ def test_labels_match_the_spec_units() -> None:
     assert unit_label("length", "metric") == "mm"
     assert unit_label("speed", "us") == "mph"
     assert unit_label("speed", "metric") == "m/s"
-    assert unit_label("time", "us") == "min"
-    assert unit_label("time", "metric") == "min"
+    assert unit_label("time", "us") == "s"
+    assert unit_label("time", "metric") == "s"
 
 
 # ------------------------------------------------------------------ round trips (property)

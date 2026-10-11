@@ -471,6 +471,8 @@ def test_quantity_spot_checks() -> None:
     assert quantity_of(schema.Burner, "rated_power_W") == "power"
     assert quantity_of(schema.Liquid, "volume_m3") == "volume"
     assert quantity_of(schema.Vessel, "material") is None
+    assert quantity_of(schema.Atmosphere, "altitude_m") == "altitude"
+    assert quantity_of(schema.SimSettings, "plateau_rate_K_per_min") == "temperature_rate"
 
 
 def _has_bound(info: Any) -> bool:

@@ -6,8 +6,10 @@ affine map of the SI value:
     display = (si + offset_si) * scale + offset_disp
 
 Temperatures use the affine part (kelvin to Celsius or Fahrenheit). Temperature
-differences use the scale only (1 K = 1.8 F). Metric display uses degC, L, kW, mm, m/s,
-min. US display uses degF, gal (US), BTU/hr, in, mph, min (REQUIREMENTS B7).
+differences and rates use the scale only (1 K = 1.8 F). Metric display uses degC, L, kW,
+mm, m/s, s, m. US display uses degF, gal (US), BTU/hr, in, mph, s, ft (REQUIREMENTS B7).
+
+Time is seconds in both systems (the GUI formats long durations itself).
 """
 
 from __future__ import annotations
@@ -39,12 +41,14 @@ _CONVERSIONS: dict[UnitSystem, dict[Quantity, _Conv]] = {
     "metric": {
         "temperature": _Conv("°C", 1.0, _KELVIN_OFFSET),
         "temperature_delta": _Conv("°C", 1.0),
+        "temperature_rate": _Conv("°C/min", 1.0),
         "length": _Conv("mm", 1000.0),
+        "altitude": _Conv("m", 1.0),
         "area": _Conv("cm²", 1.0e4),
         "volume": _Conv("L", 1000.0),
         "power": _Conv("kW", 1.0e-3),
         "speed": _Conv("m/s", 1.0),
-        "time": _Conv("min", 1.0 / 60.0),
+        "time": _Conv("s", 1.0),
         "fraction": _Conv("", 1.0),
         "specific_gravity": _Conv("SG", 1.0),
         "conductivity": _Conv("W/(m·K)", 1.0),
@@ -57,12 +61,14 @@ _CONVERSIONS: dict[UnitSystem, dict[Quantity, _Conv]] = {
         # 1 K = 1.8 F; 0 degC = 32 degF
         "temperature": _Conv("°F", 1.8, _KELVIN_OFFSET, 32.0),
         "temperature_delta": _Conv("°F", 1.8),
+        "temperature_rate": _Conv("°F/min", 1.8),
         "length": _Conv("in", 1.0 / 0.0254),
+        "altitude": _Conv("ft", 1.0 / 0.3048),
         "area": _Conv("in²", 1.0 / 6.4516e-4),
         "volume": _Conv("gal", 1.0 / 0.003785411784),  # US gallon
         "power": _Conv("BTU/hr", 3.412141633),
         "speed": _Conv("mph", 2.2369362920544),
-        "time": _Conv("min", 1.0 / 60.0),
+        "time": _Conv("s", 1.0),
         "fraction": _Conv("", 1.0),
         "specific_gravity": _Conv("SG", 1.0),
         "conductivity": _Conv("BTU/(hr·ft·°F)", 1.0 / 1.730734666),
