@@ -1,64 +1,66 @@
-"""Heat-source construction and power commands (CONTRACTS.md section 9).
+"""Heat-source construction and power commands (CONTRACTS.md section 9, WP05).
 
-WP00 stub, implemented by WP05. ScheduleCommand and ManualCommand live here in the
-stub; WP05 may move them into sources/commands.py.
+Dispatch from the scenario to the runtime objects. The implementations live in
+`heat_sources.py`, `actuators.py` and `commands.py`; they are re-exported here so that
+`thermosim.sources.build` stays the single entry point.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from thermosim.config import schema
+from thermosim.core.errors import ScenarioError
+from thermosim.core.protocols import Actuator, HeatSource
+from thermosim.core.types import Domain
+from thermosim.sources.actuators import GasValveActuator, OnOffActuator, VariableActuator
+from thermosim.sources.commands import ManualCommand, ScheduleCommand
+from thermosim.sources.heat_sources import (
+    BurnerSource,
+    ElementSource,
+    deposition_for_burner,
+    deposition_for_element,
+)
 
-from thermosim.core.protocols import Actuator, CommandSource, HeatSource
-from thermosim.core.types import Domain, HeatDeposition
-
-if TYPE_CHECKING:
-    from thermosim.config.schema import (
-        Burner,
-        Element,
-        GasValveActuator,
-        OnOffActuator,
-        Scenario,
-        VariableActuator,
-    )
+__all__ = [
+    "ManualCommand",
+    "ScheduleCommand",
+    "build_actuator",
+    "build_heat_source",
+    "deposition_for_burner",
+    "deposition_for_element",
+]
 
 
-def build_heat_source(scenario: Scenario, domain: Domain) -> HeatSource:
-    """Create the heat source (burner or element) described by the scenario."""
-    raise NotImplementedError
+def build_heat_source(scenario: schema.Scenario, domain: Domain) -> HeatSource:
+    """Create the heat source (burner or element) described by the scenario.
+
+    Raises GeometryError if the source cannot be placed in the domain (no base node under a
+    burner footprint, or an element segment above the liquid).
+    """
+    cfg = scenario.heat_source
+    if isinstance(cfg, schema.Burner):
+        return BurnerSource(
+            rated_power_W=cfg.rated_power_W,
+            efficiency=cfg.efficiency,
+            actuator=build_actuator(cfg.actuator),
+            deposition=deposition_for_burner(cfg, domain),
+        )
+    if isinstance(cfg, schema.Element):
+        return ElementSource(
+            rated_power_W=cfg.rated_power_W,
+            actuator=build_actuator(cfg.actuator),
+            deposition=deposition_for_element(cfg, domain),
+        )
+    raise ScenarioError(f"heat_source.type: unknown heat source {cfg.type!r}")
 
 
-def build_actuator(cfg: OnOffActuator | VariableActuator | GasValveActuator) -> Actuator:
+def build_actuator(
+    cfg: schema.OnOffActuator | schema.VariableActuator | schema.GasValveActuator,
+) -> Actuator:
     """Create the actuator for an OnOff / Variable / GasValve config."""
-    raise NotImplementedError
-
-
-def deposition_for_burner(cfg: Burner, domain: Domain) -> HeatDeposition:
-    """Where a burner's heat enters: the base cells / base shell nodes under its footprint."""
-    raise NotImplementedError
-
-
-def deposition_for_element(cfg: Element, domain: Domain) -> HeatDeposition:
-    """Where an element's heat enters, along its path. GeometryError if any path point is
-    above the liquid line."""
-    raise NotImplementedError
-
-
-class ScheduleCommand(CommandSource):
-    """Piecewise-constant command from Scenario.power_schedule."""
-
-    def __init__(self, scenario: Scenario) -> None:
-        raise NotImplementedError
-
-    def command(self, t: float, state_probe_K: float) -> float:
-        raise NotImplementedError
-
-
-class ManualCommand(CommandSource):
-    """Thread-safe command set by the user; used in REALTIME mode."""
-
-    def set(self, value: float) -> None:
-        """Set the requested power fraction, 0..1."""
-        raise NotImplementedError
-
-    def command(self, t: float, state_probe_K: float) -> float:
-        raise NotImplementedError
+    if isinstance(cfg, schema.OnOffActuator):
+        return OnOffActuator(cfg.cycle_period_s)
+    if isinstance(cfg, schema.VariableActuator):
+        return VariableActuator()
+    if isinstance(cfg, schema.GasValveActuator):
+        return GasValveActuator(cfg.min_fraction, cfg.response_time_s)
+    raise ScenarioError(f"actuator.type: unknown actuator {cfg.type!r}")

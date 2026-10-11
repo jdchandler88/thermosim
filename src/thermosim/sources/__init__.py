@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .actuators import GasValveActuator, OnOffActuator, VariableActuator
 from .build import (
     ManualCommand,
     ScheduleCommand,
@@ -10,10 +11,16 @@ from .build import (
     deposition_for_burner,
     deposition_for_element,
 )
+from .heat_sources import BurnerSource, ElementSource
 
 __all__ = [
+    "BurnerSource",
+    "ElementSource",
+    "GasValveActuator",
     "ManualCommand",
+    "OnOffActuator",
     "ScheduleCommand",
+    "VariableActuator",
     "build_actuator",
     "build_heat_source",
     "deposition_for_burner",
