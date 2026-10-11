@@ -26,6 +26,15 @@ dev = [
     "hypothesis",
     "matplotlib>=3.11.2",
 ]
+# Phase 2 GPU backend (WP20). Optional: `uv sync --extra gpu`. CUDA 12.x wheels only,
+# because CUDA 13 dropped Pascal (compute capability 6.1, GTX 1060).
+# No macOS wheels exist for cuda-bindings, so the marker keeps `uv sync --all-extras` working there.
+# numpy<2.5: numba-cuda 0.30.4 still calls np.row_stack, which NumPy 2.5 removed, so CUDA kernel
+# compilation fails with NumPy 2.5 (verified).
+gpu = [
+    "numba-cuda[cu12]==0.30.4; sys_platform != 'darwin'",
+    "numpy>=2.0,<2.5",
+]
 
 [project.scripts]
 thermosim = "thermosim.cli:main"
