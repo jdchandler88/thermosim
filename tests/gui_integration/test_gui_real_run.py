@@ -114,7 +114,11 @@ def test_geometry_error_marks_the_right_field(qtbot, make_window) -> None:  # ty
     qtbot.waitUntil(lambda: not window.is_preparing, timeout=RUN_TIMEOUT_MS)
     assert not window.is_active
     assert window.last_preflight is not None and not window.last_preflight.ok
-    assert window.last_preflight.error_field == "heat_source.path_m"
+    # the first vertex above the liquid: z = 0.25 m, row 0 (index 2 is z)
+    assert window.last_preflight.error_field == "heat_source.path_m.0.2"
+    table = window.editor.field_widget("heat_source.path_m")
+    assert table.property("invalid") is True
+    assert table.item(0, 2).background().color().alpha() > 0  # type: ignore[attr-defined]
     assert "above the liquid" in window.editor._banner.text()
     assert window.editor._banner.isVisible()
     assert window.editor._tabs.tabText(3).endswith("!")  # Heat source tab

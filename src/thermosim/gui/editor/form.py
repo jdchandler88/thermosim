@@ -199,15 +199,19 @@ class _TableTarget:
         self.table = table
         self.cols = cols
         self._tip = table.toolTip()
+        self._style = table.styleSheet()
         self._marked: list[QTableWidgetItem] = []
 
     def clear(self) -> None:
+        self.table.blockSignals(True)  # changing an item's look must not count as an edit
         for item in self._marked:
             item.setBackground(QColor(0, 0, 0, 0))
             item.setToolTip("")
+        self.table.blockSignals(False)
         self._marked.clear()
         self.table.setProperty("invalid", False)
         self.table.setToolTip(self._tip)
+        self.table.setStyleSheet(self._style)
 
     def mark(self, msg: str | None, rest: Path) -> None:
         if msg is None:
@@ -215,10 +219,20 @@ class _TableTarget:
             return
         self.table.setProperty("invalid", True)
         self.table.setToolTip(msg)
+        self.table.setStyleSheet("QTableWidget { border: 1px solid #d9534f; }")
         if rest and isinstance(rest[0], int) and rest[0] < self.table.rowCount():
             row = rest[0]
             col = 0
-            if len(rest) > 1:
+            if len(rest) == 2 and isinstance(rest[1], int):  # (row, tuple index)
+                col = next(
+                    (
+                        c
+                        for c, spec in enumerate(self.cols)
+                        if spec.field is None and spec.idx == rest[1]
+                    ),
+                    0,
+                )
+            elif len(rest) > 1:
                 field = rest[1] if isinstance(rest[1], str) else None
                 idx = rest[2] if len(rest) > 2 and isinstance(rest[2], int) else None
                 for c, spec in enumerate(self.cols):
@@ -227,8 +241,10 @@ class _TableTarget:
                         break
             item = self.table.item(row, col)
             if item is not None:
+                self.table.blockSignals(True)
                 item.setBackground(_ERR_CELL)
                 item.setToolTip(msg)
+                self.table.blockSignals(False)
                 self._marked.append(item)
 
 

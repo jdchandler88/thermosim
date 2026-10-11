@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import re
 import threading
 import time
 from collections.abc import Callable
@@ -75,13 +76,26 @@ def locate_error(scenario: Scenario, message: str) -> str | None:
     if m.startswith("probe") or " probe " in m[:20]:
         return "probes"
     if "element" in m:
-        return "heat_source.path_m"
+        return _element_row(scenario, m) or "heat_source.path_m"
     if "burner" in m or "footprint" in m:
         return "heat_source.footprint_outer_diameter_m"
     if "cell size" in m or "no liquid cell" in m:
         return "simulation.cell_size_m"
     if "thickness" in m:
         return "vessel.wall_thickness_m"
+    return None
+
+
+def _element_row(scenario: Scenario, message: str) -> str | None:
+    """Path of the element vertex ('heat_source.path_m.ROW.2') whose z the message names."""
+    found = re.search(r"z=(-?\d+\.?\d*)", message)
+    path = getattr(scenario.heat_source, "path_m", None)
+    if found is None or path is None:
+        return None
+    z = float(found.group(1))
+    for row, point in enumerate(path):
+        if abs(point[2] - z) < 6e-4:
+            return f"heat_source.path_m.{row}.2"
     return None
 
 
