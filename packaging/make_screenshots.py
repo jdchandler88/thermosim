@@ -3,8 +3,10 @@
 Usage (from the repository root):
 
     QT_QPA_PLATFORM=offscreen uv run python packaging/make_screenshots.py [OUT_DIR]
+    QT_QPA_PLATFORM=offscreen uv run python packaging/make_screenshots.py --flow [OUT_DIR]
 
-OUT_DIR defaults to docs/images. Takes about a minute.
+OUT_DIR defaults to docs/images. Takes about a minute. ``--flow`` makes only the flow-mode
+screenshot (flow-mode.png), which needs a flow-mode run.
 """
 
 from __future__ import annotations
@@ -127,5 +129,36 @@ def main(out_dir: Path) -> None:
         window.close()
 
 
+def main_flow(out_dir: Path) -> None:
+    """The flow-mode screenshot (WP22): the insulated electric kettle at 20 mm with the real
+    runner in flow mode, scrubbed to 70 % of the run, flow arrows on. Takes about a minute."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    app = create_application(["thermosim"])
+    with tempfile.TemporaryDirectory() as tmp:
+        settings = QSettings(str(Path(tmp) / "s.ini"), QSettings.Format.IniFormat)
+        window = MainWindow(settings=settings)
+        window.resize(1500, 900)
+        window.show()
+        base = scenario("kettle_electric_insulated", cell_size_m=0.02, snapshot_interval_s=10.0)
+        flow = base.model_copy(
+            update={"model": base.model.model_copy(update={"liquid_transport": "flow"})}
+        )
+        window.load_scenario(flow)
+        pump(app)
+        window.start_run(RunMode.FAST)
+        wait_for(app, lambda: window.result is not None and not window.is_active)
+        window.slice_view.set_show_arrows(True)
+        window.scrub_to(window.store.times()[-1] * 0.7)
+        shot(window, app, out_dir / "flow-mode.png")
+        window.editor.mark_clean()
+        window._result_saved = True
+        window.close()
+
+
 if __name__ == "__main__":
-    main(Path(sys.argv[1]) if len(sys.argv) > 1 else Path("docs/images"))
+    args = [a for a in sys.argv[1:] if a != "--flow"]
+    out = Path(args[0]) if args else Path("docs/images")
+    if "--flow" in sys.argv[1:]:
+        main_flow(out)
+    else:
+        main(out)

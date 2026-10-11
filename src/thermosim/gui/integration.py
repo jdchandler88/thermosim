@@ -34,7 +34,15 @@ from thermosim.gui.formatting import fmt_clock, fmt_temp
 
 LONG_RUN_S = 600.0  # warn when the estimated wall time exceeds this
 PREVIEW_CELL_SIZE_M = 0.010  # "10 mm is a quick preview" (schema)
+PREVIEW_CELL_SIZE_FLOW_M = 0.020  # flow mode costs far more per cell: preview at 20 mm
 TIMING_STEPS = 50
+FLOW_TIMING_STEPS = 30  # flow steps cost 10 to 100 times a thermal step: time fewer of them
+# Typical developed plume speed (largest face velocity, m/s) of a heated kettle: 0.12 at 20 mm
+# and 0.21 at 10 mm cells (docs/physics/flow.md, section 8), roughly 0.12 (0.02/dx)^0.8. The flow
+# CFL limit (0.5 dx / speed) then gives the time step that a flow-mode run settles to.
+FLOW_REF_SPEED_M_S = 0.12
+FLOW_REF_CELL_M = 0.02
+FLOW_SPEED_EXPONENT = 0.8
 
 STATUS_CHECK = "Checking the setup..."
 STATUS_WARMUP = "Preparing solver (first run only)..."
@@ -58,10 +66,20 @@ class PreflightResult:
     est_sim_s: float | None = None  # simulated time the run is expected to need
     est_wall_s: float | None = None  # estimated wall time of the run
     quick_estimate_s: float | None = None  # lumped-model time to target
+    flow: bool = False  # flow mode: the estimate includes the flow solver
+    wall_per_step_s: float = 0.0  # measured wall time of one step
+    dt_run_s: float = 0.0  # time step the estimate assumes (flow mode)
+    preview_m: float = PREVIEW_CELL_SIZE_M  # cell size offered for a quick preview
 
     @property
     def is_long(self) -> bool:
         return self.est_wall_s is not None and self.est_wall_s > LONG_RUN_S
+
+
+def preview_cell_size(scenario: Scenario) -> float:
+    """Cell size (m) offered as the quick preview for this scenario's transport model."""
+    flow = scenario.model.liquid_transport == "flow"
+    return PREVIEW_CELL_SIZE_FLOW_M if flow else PREVIEW_CELL_SIZE_M
 
 
 def locate_error(scenario: Scenario, message: str) -> str | None:
@@ -134,6 +152,7 @@ def run_preflight(
         liquid_cells=int(dom.grid.is_liquid.sum()),
         total_cells=int(dom.grid.is_liquid.size),
         shell_nodes=int(dom.shell.n),
+        preview_m=preview_cell_size(scenario),
     )
 
     try:
@@ -146,9 +165,23 @@ def run_preflight(
             return res
         say(STATUS_TIMING)
         t0, sim0 = time.perf_counter(), model.state.t
-        model.advance(scenario.simulation.max_sim_time_s, max_steps=TIMING_STEPS)
+        steps0 = model.step_count
+        flow_mode = model.flow is not None
+        model.advance(
+            scenario.simulation.max_sim_time_s,
+            max_steps=FLOW_TIMING_STEPS if flow_mode else TIMING_STEPS,
+        )
         wall = max(time.perf_counter() - t0, 1e-9)
         result.sim_per_wall = (model.state.t - sim0) / wall
+        result.flow = flow_mode
+        if flow_mode:
+            # The first steps start from rest, where the flow CFL does not limit the time
+            # step yet, so the simulated time per wall second they give is far too optimistic.
+            # Use the measured cost of a step with the time step of a developed plume.
+            n_done = max(model.step_count - steps0, 1)
+            result.wall_per_step_s = wall / n_done
+            result.dt_run_s = flow_dt_estimate(scenario.simulation.cell_size_m, model.stable_dt_s)
+            result.sim_per_wall = result.dt_run_s / result.wall_per_step_s
     except ThermoSimError as exc:
         return PreflightResult(ok=False, error=str(exc), error_field=None)
 
@@ -164,6 +197,13 @@ def run_preflight(
     if result.sim_per_wall > 0:
         result.est_wall_s = result.est_sim_s / result.sim_per_wall
     return result
+
+
+def flow_dt_estimate(cell_size_m: float, thermal_dt_s: float) -> float:
+    """Time step (s) a flow-mode run settles to: the flow CFL limit for a developed plume,
+    also bounded by the thermal limit and the model's 1 s cap."""
+    speed = FLOW_REF_SPEED_M_S * (FLOW_REF_CELL_M / cell_size_m) ** FLOW_SPEED_EXPONENT
+    return float(min(0.5 * cell_size_m / speed, thermal_dt_s, 1.0))
 
 
 class PreflightController(QObject):
@@ -284,6 +324,8 @@ class QuickEstimatePanel(QGroupBox):
 def describe_preflight(result: PreflightResult) -> str:
     """One-line status text for a successful preflight."""
     parts = [f"{result.liquid_cells:,} liquid cells"]
+    if result.flow:
+        parts.append("flow mode")
     if result.est_wall_s is not None:
         wall = result.est_wall_s
         parts.append(

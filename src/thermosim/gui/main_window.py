@@ -51,7 +51,6 @@ from thermosim.gui.chart import Chart
 from thermosim.gui.editor import ScenarioEditor
 from thermosim.gui.formatting import DEFAULT_UNITS, fmt_clock, fmt_quantity
 from thermosim.gui.integration import (
-    PREVIEW_CELL_SIZE_M,
     PreflightController,
     PreflightResult,
     QuickEstimatePanel,
@@ -59,7 +58,7 @@ from thermosim.gui.integration import (
 )
 from thermosim.gui.measured_dialog import MeasuredImportDialog
 from thermosim.gui.runner_factory import make_runner
-from thermosim.gui.slice_view import SliceView
+from thermosim.gui.slice_view import SliceView, snapshot_peak_speed
 from thermosim.gui.snapshot_list import ListSnapshotStore
 from thermosim.gui.summary_panel import SummaryPanel
 
@@ -107,6 +106,7 @@ class MainWindow(QMainWindow):
         self._result: RunResult | None = None
         self._measured: Any = None
         self._displayed: Snapshot | None = None
+        self._peak_speed: float | None = None
         self._updating_scrub = False
         self._playing = False
         self._play_t = 0.0
@@ -512,6 +512,7 @@ class MainWindow(QMainWindow):
         self.chart.reset(scenario)
         self.summary.reset()
         self.summary.set_comparison(None)
+        self._peak_speed = None
         self._update_scrubber_range()
         self.time_label.setText("t = --:--")
         self.chart.set_cursor(None)
@@ -649,10 +650,10 @@ class MainWindow(QMainWindow):
             choice = "run"
             if result.is_long:
                 choice = self._ask_long_run(result)
-            if choice == "preview" and scenario.simulation.cell_size_m >= PREVIEW_CELL_SIZE_M:
+            if choice == "preview" and scenario.simulation.cell_size_m >= result.preview_m:
                 choice = "run"  # already at or coarser than the preview size
             if choice == "preview":
-                self._use_preview_cell_size()
+                self._use_preview_cell_size(result.preview_m)
                 self._update_actions()
                 self.start_run(mode)
                 return
@@ -669,7 +670,7 @@ class MainWindow(QMainWindow):
             f"This run is estimated to take about {minutes:.0f} minutes "
             f"({result.liquid_cells:,} liquid cells)."
         )
-        shown = float(to_display(PREVIEW_CELL_SIZE_M, "length", self._system))
+        shown = float(to_display(result.preview_m, "length", self._system))
         box.setInformativeText(
             "A cell size of "
             f"{fmt_quantity(shown, 'length', self._system)} {unit_label('length', self._system)}"
@@ -684,8 +685,8 @@ class MainWindow(QMainWindow):
             return "preview"
         return "run" if clicked is run else "cancel"
 
-    def _use_preview_cell_size(self) -> None:
-        self.editor.set_value_si("simulation.cell_size_m", PREVIEW_CELL_SIZE_M)
+    def _use_preview_cell_size(self, size_m: float) -> None:
+        self.editor.set_value_si("simulation.cell_size_m", size_m)
 
     def _launch(self, run_scenario: Scenario, mode: RunMode) -> None:
         """Reset the views and start the runner."""
@@ -772,6 +773,7 @@ class MainWindow(QMainWindow):
             elif isinstance(ev, SnapshotEvent):
                 if isinstance(self._store, ListSnapshotStore):
                     self._store.add(ev.snapshot)
+                self._note_speed(ev.snapshot)
                 newest = ev.snapshot
             elif isinstance(ev, ProgressEvent):
                 self._last_progress = ev
@@ -799,6 +801,22 @@ class MainWindow(QMainWindow):
             self._on_finished(finished)
         self._update_status()
 
+    def _note_speed(self, snap: Snapshot) -> None:
+        """Track the peak in-plane flow speed over the snapshots seen and show it."""
+        speed = snapshot_peak_speed(snap)
+        if speed is None:
+            return
+        if self._peak_speed is None or speed > self._peak_speed:
+            self._peak_speed = speed
+            self.summary.set_peak_speed(speed)
+
+    def _scan_peak_speed(self) -> None:
+        """Peak flow speed over a whole stored run (finished or opened from disk)."""
+        self._peak_speed = None
+        self.summary.set_peak_speed(None)
+        for n in range(len(self._store)):
+            self._note_speed(self._store[n])
+
     def _end_run(self) -> None:
         self._active = False
         self._timer.stop()
@@ -819,6 +837,7 @@ class MainWindow(QMainWindow):
         )
         self.summary.set_progress(result.summary.sim_time_s, result.summary.wall_time_s, 0.0)
         self._end_run()
+        self._scan_peak_speed()
         self._update_scrubber_range()
         if len(self._store):
             last = self._store[len(self._store) - 1]

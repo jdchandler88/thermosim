@@ -44,6 +44,7 @@ from PySide6.QtWidgets import (
 from thermosim.config.schema import (
     MATERIAL_KEYS,
     CustomMaterial,
+    ModelSettings,
     Scenario,
 )
 from thermosim.config.units import (
@@ -135,6 +136,19 @@ def _strip_optional(ann: Any) -> tuple[Any, bool]:
         if len(args) < len(get_args(ann)) and len(args) == 1:
             return args[0], True
     return ann, False
+
+
+# Friendly text for choices whose raw value is a code word (the value stored stays the code).
+_CHOICE_LABELS: dict[str, str] = {
+    "effective_conductivity": "Effective conductivity (fast)",
+    "flow": "Flow (buoyancy-driven, much slower)",
+}
+FLOW_NOTE = (
+    "Flow mode solves the buoyancy-driven motion of the liquid on the grid and is much "
+    "slower than effective conductivity: expect minutes to an hour instead of seconds, "
+    "and use a cell size of 20 mm or more for a first look. The flow settings below "
+    "apply to flow mode only."
+)
 
 
 def _is_model(tp: Any) -> bool:
@@ -538,6 +552,11 @@ class ScenarioEditor(QWidget):
             else:
                 label, widget = self._leaf(cls, name, info, fpath)
                 form.addRow(label, widget)
+                if name == "liquid_transport" and cls is ModelSettings:
+                    note = QLabel(FLOW_NOTE)
+                    note.setWordWrap(True)
+                    note.setObjectName("flow_note")
+                    form.addRow(note)
         return host
 
     def _complex(self, cls: type[BaseModel], name: str, info: FieldInfo, path: Path) -> QGroupBox:
@@ -609,7 +628,7 @@ class ScenarioEditor(QWidget):
     def _combo(self, path: Path, values: list[Any], tip: str) -> QComboBox:
         combo = QComboBox()
         for v in values:
-            combo.addItem(str(v), v)
+            combo.addItem(_CHOICE_LABELS.get(str(v), str(v)), v)
         combo.setToolTip(tip)
 
         def refresh() -> None:

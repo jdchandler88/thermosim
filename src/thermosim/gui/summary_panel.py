@@ -58,6 +58,7 @@ class SummaryPanel(QWidget):
         self._comparison_note = ""
         self._progress: tuple[float, float, float] | None = None
         self._status = "Idle"
+        self._peak_speed: float | None = None
 
         self.status_label = QLabel()
         self.reason_label = QLabel()
@@ -65,6 +66,7 @@ class SummaryPanel(QWidget):
         self.times_label = QLabel()
         self.final_label = QLabel()
         self.fuel_label = QLabel()
+        self.peak_speed_label = QLabel()
         self.error_label = QLabel()
         self.error_label.setWordWrap(True)
         self.error_label.setStyleSheet("color: #b52b27;")
@@ -78,6 +80,8 @@ class SummaryPanel(QWidget):
         form.addRow("Sim / wall time", self.times_label)
         form.addRow("Temperatures", self.final_label)
         form.addRow("Fuel / electricity", self.fuel_label)
+        self._peak_speed_title = QLabel("Peak flow speed")
+        form.addRow(self._peak_speed_title, self.peak_speed_label)
 
         self.energy_table = QTableWidget(len(_ROWS), 3)
         self.energy_table.setHorizontalHeaderLabels(["Energy", "Amount", "Share of heat in"])
@@ -115,6 +119,7 @@ class SummaryPanel(QWidget):
         self._summary = None
         self._sample = None
         self._progress = None
+        self._peak_speed = None
         self.error_label.hide()
         self._render()
 
@@ -134,6 +139,11 @@ class SummaryPanel(QWidget):
     def set_summary(self, summary: Summary) -> None:
         self._summary = summary
         self._flows = summary.energy
+        self._render()
+
+    def set_peak_speed(self, speed_m_s: float | None) -> None:
+        """Peak flow speed (m/s) seen so far in the slice; None hides the row (no flow data)."""
+        self._peak_speed = speed_m_s
         self._render()
 
     def set_comparison(self, comparison: Any, note: str = "") -> None:
@@ -188,6 +198,11 @@ class SummaryPanel(QWidget):
             self.fuel_label.setText(f"{kwh:.3f} kWh electricity")
         else:
             self.fuel_label.setText("-")
+        peak = self._peak_speed
+        self._peak_speed_title.setVisible(peak is not None)
+        self.peak_speed_label.setVisible(peak is not None)
+        if peak is not None:
+            self.peak_speed_label.setText(f"{peak * 100:.1f} cm/s (in the slice plane)")
         self._render_energy()
         self._render_comparison()
 

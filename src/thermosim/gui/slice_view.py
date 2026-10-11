@@ -9,8 +9,9 @@ from typing import Any
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QPen
+from PySide6.QtGui import QColor, QPen, QPolygonF
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QHBoxLayout,
     QLabel,
@@ -31,6 +32,23 @@ from thermosim.gui.formatting import (
     temp_label,
 )
 
+MAX_ARROWS_ACROSS = 24  # decimate so that at most about this many arrows span the longer side
+ARROW_MAX_CELLS = 1.6  # length of the longest arrow, in decimated-grid spacings
+SPEED_FLOOR_M_S = 1e-4  # no arrows or speed colours below this (numerical noise)
+
+
+def snapshot_peak_speed(snap: Snapshot) -> float | None:
+    """Largest in-plane speed (m/s) of a snapshot's slice velocity, or None without flow data."""
+    if snap.velocity_u is None or snap.velocity_w is None:
+        return None
+    speed = np.hypot(snap.velocity_u.astype(np.float64), snap.velocity_w.astype(np.float64))
+    return float(np.nanmax(speed)) if np.isfinite(speed).any() else 0.0
+
+
+def arrow_stride(shape: tuple[int, int]) -> int:
+    """Index step between drawn arrows for a slice of ``shape`` cells."""
+    return max(1, math.ceil(max(shape) / MAX_ARROWS_ACROSS))
+
 
 def get_colormap() -> Any:
     """inferno, falling back to viridis."""
@@ -40,6 +58,14 @@ def get_colormap() -> Any:
         except Exception:
             continue
     return pg.ColorMap([0.0, 1.0], [(0, 0, 0), (255, 255, 255)])
+
+
+def _speed_colormap() -> Any:
+    """viridis (dark = still), falling back to a grey ramp."""
+    try:
+        return pg.colormap.get("viridis")
+    except Exception:
+        return pg.ColorMap([0.0, 1.0], [(0, 0, 0), (255, 255, 255)])
 
 
 class _ColoredLines(pg.GraphicsObject):  # type: ignore[misc]
@@ -79,6 +105,58 @@ class _ColoredLines(pg.GraphicsObject):  # type: ignore[misc]
             painter.drawLine(a, b)
 
 
+class _Arrows(pg.GraphicsObject):  # type: ignore[misc]
+    """Velocity arrows: a shaft and an open head each, in plot (display length) coordinates."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._arrows: list[tuple[float, float, float, float]] = []  # x0, z0, x1, z1
+        self._rect = QRectF()
+
+    def set_arrows(self, arrows: list[tuple[float, float, float, float]]) -> None:
+        self.prepareGeometryChange()
+        self._arrows = arrows
+        if arrows:
+            xs = [v for a in arrows for v in (a[0], a[2])]
+            zs = [v for a in arrows for v in (a[1], a[3])]
+            self._rect = QRectF(min(xs), min(zs), max(xs) - min(xs), max(zs) - min(zs))
+        else:
+            self._rect = QRectF()
+        self.update()
+
+    @property
+    def n_arrows(self) -> int:
+        return len(self._arrows)
+
+    @property
+    def arrows(self) -> list[tuple[float, float, float, float]]:
+        return self._arrows
+
+    def boundingRect(self) -> QRectF:
+        pad = 0.02 * max(self._rect.width(), self._rect.height(), 1e-6)
+        return self._rect.adjusted(-pad, -pad, pad, pad)
+
+    def paint(self, painter: Any, *args: Any) -> None:
+        pen = QPen(QColor(255, 255, 255, 235), 1.6)
+        pen.setCosmetic(True)
+        outline = QPen(QColor(0, 0, 0, 160), 3.2)
+        outline.setCosmetic(True)
+        for x0, z0, x1, z1 in self._arrows:
+            dx, dz = x1 - x0, z1 - z0
+            length = math.hypot(dx, dz)
+            if length <= 0.0:
+                continue
+            head = 0.35 * length
+            ux, uz = dx / length, dz / length
+            left = QPointF(x1 - head * (ux - 0.5 * uz), z1 - head * (uz + 0.5 * ux))
+            right = QPointF(x1 - head * (ux + 0.5 * uz), z1 - head * (uz - 0.5 * ux))
+            tip = QPointF(x1, z1)
+            for p in (outline, pen):
+                painter.setPen(p)
+                painter.drawLine(QPointF(x0, z0), tip)
+                painter.drawPolyline(QPolygonF([left, tip, right]))
+
+
 class SliceView(QWidget):
     """Heat map of the latest or scrubbed snapshot."""
 
@@ -104,6 +182,11 @@ class SliceView(QWidget):
             edit.setMaximumWidth(70)
             edit.setAlignment(Qt.AlignmentFlag.AlignRight)
         self._range_unit = QLabel()
+        self._arrows_check = QCheckBox("Flow arrows")
+        self._arrows_check.setChecked(True)
+        self._arrows_check.setToolTip("Draw the flow velocity in the slice (flow mode only).")
+        self._speed_check = QCheckBox("Speed colours")
+        self._speed_check.setToolTip("Colour the slice by flow speed instead of temperature.")
         strip = QHBoxLayout()
         strip.addWidget(QLabel("Color range"))
         strip.addWidget(self._mode_combo)
@@ -112,6 +195,10 @@ class SliceView(QWidget):
         strip.addWidget(self._hi_edit)
         strip.addWidget(self._range_unit)
         strip.addStretch(1)
+        strip.addWidget(self._arrows_check)
+        strip.addWidget(self._speed_check)
+        self._arrows_check.toggled.connect(self._on_flow_option)
+        self._speed_check.toggled.connect(self._on_flow_option)
         self._mode_combo.currentIndexChanged.connect(self._on_mode)
         self._lo_edit.editingFinished.connect(self._on_range_edit)
         self._hi_edit.editingFinished.connect(self._on_range_edit)
@@ -126,6 +213,9 @@ class SliceView(QWidget):
         self._walls = _ColoredLines(width=7.0)
         self._walls.setZValue(10)
         self._plot.addItem(self._walls)
+        self._arrow_item = _Arrows()
+        self._arrow_item.setZValue(15)
+        self._plot.addItem(self._arrow_item)
         self._colorbar = pg.ColorBarItem(
             values=self._fixed_K, colorMap=self._cmap, interactive=False, width=16
         )
@@ -140,8 +230,10 @@ class SliceView(QWidget):
         lay.addLayout(strip)
         lay.addWidget(self._glw, 1)
         lay.addWidget(self._readout)
+        self._speed_cmap = _speed_colormap()
         self._refresh_axes()
         self._refresh_range_edits()
+        self._update_flow_controls()
 
     # ------------------------------------------------------------------ public API
     @property
@@ -167,6 +259,33 @@ class SliceView(QWidget):
 
     def n_wall_segments(self) -> int:
         return int(self._walls.n_lines)
+
+    @property
+    def has_flow(self) -> bool:
+        """True when the displayed snapshot carries a velocity field."""
+        snap = self._snapshot
+        return snap is not None and snap.velocity_u is not None and snap.velocity_w is not None
+
+    @property
+    def arrows_visible(self) -> bool:
+        return self.has_flow and self._arrows_check.isChecked()
+
+    @property
+    def speed_colors(self) -> bool:
+        return self.has_flow and self._speed_check.isChecked()
+
+    def n_arrows(self) -> int:
+        return int(self._arrow_item.n_arrows)
+
+    def arrow_segments(self) -> list[tuple[float, float, float, float]]:
+        """Drawn arrows as (x0, z0, x1, z1) in plot (display length) coordinates."""
+        return list(self._arrow_item.arrows)
+
+    def set_show_arrows(self, on: bool) -> None:
+        self._arrows_check.setChecked(on)
+
+    def set_show_speed(self, on: bool) -> None:
+        self._speed_check.setChecked(on)
 
     def set_system(self, system: UnitSystem) -> None:
         self._system = system
@@ -202,6 +321,8 @@ class SliceView(QWidget):
         self._snapshot = None
         self._image.clear()
         self._walls.set_lines([])
+        self._arrow_item.set_arrows([])
+        self._update_flow_controls()
         self._readout.setText(" ")
 
     def readout_at(self, x_disp: float, z_disp: float) -> str:
@@ -220,7 +341,12 @@ class SliceView(QWidget):
         coords = f"x, z: {x_disp:.1f}, {z_disp:.1f} {unit}"
         if not math.isfinite(value):
             return coords
-        return f"{coords}   {fmt_temp(value, self._system)}"
+        text = f"{coords}   {fmt_temp(value, self._system)}"
+        if snap.velocity_u is not None and snap.velocity_w is not None:
+            vu, vw = float(snap.velocity_u[i, k]), float(snap.velocity_w[i, k])
+            if math.isfinite(vu) and math.isfinite(vw):
+                text += f"   flow {math.hypot(vu, vw) * 100:.1f} cm/s"
+        return text
 
     # ------------------------------------------------------------------ internals
     def _refresh_axes(self) -> None:
@@ -239,6 +365,14 @@ class SliceView(QWidget):
         enabled = self._mode == "fixed"
         self._lo_edit.setEnabled(enabled)
         self._hi_edit.setEnabled(enabled)
+
+    def _update_flow_controls(self) -> None:
+        flow = self.has_flow
+        self._arrows_check.setVisible(flow)
+        self._speed_check.setVisible(flow)
+
+    def _on_flow_option(self) -> None:
+        self._render()
 
     def _on_mode(self) -> None:
         self._mode = str(self._mode_combo.currentData())
@@ -276,14 +410,29 @@ class SliceView(QWidget):
         snap = self._snapshot
         self._levels_K = self._compute_levels(snap)
         lo, hi = self._levels_K
-        self._colorbar.setLevels((temp(lo, self._system), temp(hi, self._system)))
+        self._update_flow_controls()
         if snap is None:
+            self._colorbar.setLevels((temp(lo, self._system), temp(hi, self._system)))
             self._image.clear()
             self._walls.set_lines([])
+            self._arrow_item.set_arrows([])
             return
-        norm = (snap.slice_T.astype(np.float64) - lo) / max(hi - lo, 1e-9)
+        if self.speed_colors:
+            speed = self._speed_field(snap)
+            top = max(float(np.nanmax(speed)) if np.isfinite(speed).any() else 0.0, 1e-3)
+            norm = speed / top
+            self._colorbar.setColorMap(self._speed_cmap)
+            self._colorbar.setLevels((0.0, top * 100.0))
+            self._colorbar.axis.setLabel("Speed (cm/s)")
+            cmap = self._speed_cmap
+        else:
+            norm = (snap.slice_T.astype(np.float64) - lo) / max(hi - lo, 1e-9)
+            self._colorbar.setColorMap(self._cmap)
+            self._colorbar.setLevels((temp(lo, self._system), temp(hi, self._system)))
+            self._colorbar.axis.setLabel(temp_label(self._system))
+            cmap = self._cmap
         valid = np.isfinite(norm)
-        rgba = self._cmap.map(np.clip(np.nan_to_num(norm), 0.0, 1.0), mode="byte")
+        rgba = cmap.map(np.clip(np.nan_to_num(norm), 0.0, 1.0), mode="byte")
         rgba = np.asarray(rgba, dtype=np.uint8)
         rgba[..., 3] = np.where(valid, 255, 0)
         self._image.setImage(rgba, autoLevels=False, levels=(0, 255))
@@ -302,6 +451,46 @@ class SliceView(QWidget):
         if first:
             self._plot.autoRange()
         self._update_walls(snap)
+        self._update_arrows(snap, dx)
+
+    @staticmethod
+    def _speed_field(snap: Snapshot) -> np.ndarray:
+        assert snap.velocity_u is not None and snap.velocity_w is not None
+        return np.hypot(snap.velocity_u.astype(np.float64), snap.velocity_w.astype(np.float64))
+
+    def _update_arrows(self, snap: Snapshot, dx: float) -> None:
+        """Decimated arrows at cell centres, the longest one ``ARROW_MAX_CELLS`` strides long."""
+        if not self.arrows_visible:
+            self._arrow_item.set_arrows([])
+            return
+        speed = self._speed_field(snap)
+        assert snap.velocity_u is not None and snap.velocity_w is not None
+        peak = float(np.nanmax(speed)) if np.isfinite(speed).any() else 0.0
+        if peak < SPEED_FLOOR_M_S:
+            self._arrow_item.set_arrows([])
+            return
+        stride = arrow_stride(snap.slice_T.shape)
+        scale = ARROW_MAX_CELLS * stride * dx / peak  # metres of arrow per m/s
+        L = lambda v: float(plot_length(v, self._system))  # noqa: E731
+        arrows: list[tuple[float, float, float, float]] = []
+        nx, nz = speed.shape
+        for i in range(stride // 2, nx, stride):
+            for k in range(stride // 2, nz, stride):
+                u, w = float(snap.velocity_u[i, k]), float(snap.velocity_w[i, k])
+                if not (math.isfinite(u) and math.isfinite(w)):
+                    continue
+                if math.hypot(u, w) < max(SPEED_FLOOR_M_S, 0.02 * peak):
+                    continue
+                x, z = float(snap.x_centers[i]), float(snap.z_centers[k])
+                arrows.append(
+                    (
+                        L(x - 0.5 * u * scale),
+                        L(z - 0.5 * w * scale),
+                        L(x + 0.5 * u * scale),
+                        L(z + 0.5 * w * scale),
+                    )
+                )
+        self._arrow_item.set_arrows(arrows)
 
     def _wall_x(self) -> float:
         sc = self._scenario

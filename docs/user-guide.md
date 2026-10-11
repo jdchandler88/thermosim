@@ -94,9 +94,14 @@ the power with the slider instead.
 - *Coefficient refresh interval*: how often material properties and heat-transfer
   coefficients are updated as temperatures change.
 
-**Model.** The *effective conductivity factor* is a calibration knob: it multiplies the
-liquid's effective conductivity (which includes the mixing effect of convection). Use
-1 unless you are tuning against measurements.
+**Model.** *Liquid transport* chooses how heat moves inside the liquid:
+- *Effective conductivity* (the default, fast): convection is stood in for by a larger
+  conductivity. The *effective conductivity factor* is a calibration knob that multiplies
+  it; use 1 unless you are tuning against measurements.
+- *Flow* (buoyancy-driven, much slower): the motion of the liquid is calculated, see
+  "Flow mode" below. The *subgrid model constant* (0.1 by default; 0 switches the subgrid
+  model off) and the *pressure solver tolerance* (leave empty for the default) only apply
+  to this mode.
 
 ## 3. Quick estimate
 
@@ -122,6 +127,51 @@ target is reached, the temperature levels off, the maximum time is reached, or y
 press **Stop**.
 
 ![A finished fast run](images/main-window-fast-run.png)
+
+### Flow mode
+
+Set **Model > Liquid transport** to *Flow* to calculate the buoyancy-driven motion of the
+liquid instead of using an effective conductivity: warm liquid rises in a plume above the
+burner or element, spreads under the surface and sinks along the cooler walls. It is the
+more physical model, and it shows *where* the liquid circulates, but **it is much slower**:
+every time step also solves for the velocity and pressure, and the time step is limited
+by the speed of the flow (about 0.02 to 0.07 s instead of up to 1 s). The pre-run check
+measures the cost of a few flow steps and includes it in the estimated run time, and the
+preview cell size offered for a long flow run is 20 mm rather than 10 mm.
+
+![Flow mode: the insulated electric kettle at 20 mm](images/flow-mode.png)
+
+What you see:
+- **Flow arrows** on the slice (toolbar above the slice, on by default): the in-plane
+  velocity at the cell centres, thinned out to at most about 24 arrows across and scaled
+  so that the longest arrow is about one and a half arrow spacings long (so only
+  directions and *relative* speeds are shown; the peak speed is in the summary). Arrows
+  slower than 2 % of the peak are left out.
+- **Speed colours** shows the in-plane speed instead of the temperature; the colour bar
+  switches to cm/s.
+- Hovering over the slice also reads out the local flow speed.
+- The **Run** box in the summary shows the **peak flow speed** seen in the slice plane
+  (typically 5 to 20 cm/s in a heated kettle).
+
+How it works, and what to keep in mind:
+- The liquid is solved as an incompressible Boussinesq flow on the same grid (a
+  projection method, with a Smagorinsky subgrid model for the unresolved eddies); the
+  heat carried by the flow is added to the heat balance of every cell, so the energy
+  balance still closes to round-off (below 1e-9 in every example). Vessel wall, base, lid,
+  surface and loss models are the same as in the other mode.
+- **Wall heat transfer is unchanged.** A 5 to 20 mm grid cannot resolve the thin thermal
+  boundary layer at a wall, so the same wall film coefficients (including the nucleate
+  boiling correction) are used in both modes as a wall function; flow mode changes how
+  heat moves *inside* the liquid, not how it enters from the wall.
+- The flow is calculated for the buoyancy of the liquid temperature only. Properties are
+  taken at the bulk temperature, which is good to a few per cent for temperature differences
+  below 20 K but is rougher in the layer right above a hot base. The free surface is treated as
+  flat and free of friction; evaporation cooling is a heat loss only and does not drive flow.
+- Use **20 mm** cells for a first look (a 40 L kettle runs in a few minutes), and 10 mm
+  when you want the finer plume structure (about an hour for the 40 L propane example).
+  Effective-conductivity mode remains the right tool for quick what-if runs.
+- The time to target differs a little from the effective-conductivity result: at 20 mm the
+  three examples take 0.4 % to 10 % longer in flow mode.
 
 ## 5. Running in real time
 
@@ -187,7 +237,8 @@ insulation without a lid) are reported one at a time: fix one and the next may a
   222 °F). The model does not boil the liquid; it uses an "effective conductivity" to stand in
   for convection, and very close to a strong heat source that shortcut lets the water there
   overheat. The average temperature and the time to target are not affected. Put probes
-  away from the heat source for realistic readings.
+  away from the heat source for realistic readings. (In flow mode the liquid moves for real,
+  but there is still no boiling.)
 - **Run time at fine cell sizes.** A large kettle at the 5 mm cell size can take several
   minutes. The 10 mm size gives nearly identical heating times (within about 0.04%) in
   well under a minute.
