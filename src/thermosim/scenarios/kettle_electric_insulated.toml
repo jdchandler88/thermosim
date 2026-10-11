@@ -1,0 +1,87 @@
+# Example: 25 L of wort (SG 1.050) in a 40 L insulated kettle with a 5.5 kW U-shaped element.
+# Units are SI. Temperatures are kelvin: 293.15 K = 20 C, 372.15 K = 99 C.
+# Vessel: 0.32 m inner diameter, 0.50 m inner height (40.2 L). The fill height for 25 L is
+# 0.311 m.
+
+schema_version = 1
+name = "Electric kettle, 25 L wort, insulated, partial lid"
+
+[vessel]
+shape = "cylinder"
+inner_diameter_m = 0.32
+inner_height_m = 0.50
+wall_thickness_m = 0.0015
+base_thickness_m = 0.005
+material = "stainless_304"
+
+# Partial lid covering half of the top.
+[lid]
+mode = "partial"
+covered_fraction = 0.5
+material = "stainless_304"
+thickness_m = 0.001
+
+# 25 mm of mineral wool or foam on the side only.
+[insulation]
+thickness_m = 0.025
+conductivity_W_mK = 0.04
+emissivity = 0.9
+covers = ["side"]
+
+[liquid]
+volume_m3 = 0.025
+initial_temp_K = 293.15          # 20 C
+specific_gravity = 1.050         # wort
+
+# U-shaped 5.5 kW element, 5 cm above the base (centre line at z = 0.05 m). It runs across
+# the vessel in the y = 0 plane, so it appears in the slice. Diameter 10 mm. Both legs
+# and the bottom of the U are inside the liquid.
+[heat_source]
+type = "element"
+rated_power_W = 5500.0
+path_m = [[-0.10, 0.0, 0.25], [-0.10, 0.0, 0.05], [0.10, 0.0, 0.05], [0.10, 0.0, 0.25]]
+diameter_m = 0.01
+
+[heat_source.actuator]
+type = "on_off"
+cycle_period_s = 2.0             # SSR time-proportioning
+
+# Indoors at 20 C, still air.
+[atmosphere]
+ambient_temp_K = 293.15          # 20 C
+wind_speed_m_s = 0.0
+relative_humidity = 0.5
+altitude_m = 0.0
+
+[[probes]]
+name = "center"
+position_m = [0.0, 0.0, 0.15]
+
+# 1 cm inside the side wall, 10 cm up.
+[[probes]]
+name = "side_wall_10cm"
+position_m = [-0.15, 0.0, 0.10]
+
+# The run stops when the side-wall probe reaches 99 C.
+[target]
+temp_K = 372.15                  # 99 C
+probe = "side_wall_10cm"
+
+[[power_schedule]]
+t_s = 0.0
+command = 1.0
+
+[simulation]
+cell_size_m = 0.005
+max_sim_time_s = 14400.0
+mode = "fast"
+realtime_speed = 1.0
+sample_interval_s = 1.0
+snapshot_interval_s = 5.0
+coeff_refresh_s = 1.0
+plateau_window_s = 600.0
+plateau_rate_K_per_min = 0.05
+
+[model]
+liquid_transport = "effective_conductivity"
+k_eff_scale = 1.0
