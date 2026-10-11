@@ -24,6 +24,7 @@ dev = [
     "ruff",
     "mypy",
     "hypothesis",
+    "matplotlib>=3.11.2",
 ]
 
 [project.scripts]
