@@ -148,14 +148,51 @@ must respect:
 - **Performance (report only):** ms per step and Poisson iterations at 32³,
   64³ and the 40 L kettle at 20 mm and 10 mm, single and multi-threaded.
 
-## WP22: Integration and visualization (M)
+## WP22: Integration of flow mode, CPU (L)
 
-- Model and runner support `liquid_transport = "flow"`. Snapshots carry
-  `velocity_u` and `velocity_w` on the slice.
-- GUI: an arrow overlay (decimated quiver) and/or streamlines on the slice,
-  with a toggle; and a speed colormap option.
-- Performance target (to be confirmed after WP20) on the GTX 1060: a 45 sim-min heat-up at
-  10 mm cells in under 30 min on the user's GPU.
+- **Owns:** `src/thermosim/sim/**`, `src/thermosim/config/**` (flow settings
+  only), `src/thermosim/gui/**` (flow display and settings only), their tests,
+  `docs/user-guide.md` (a flow-mode section), `src/thermosim/scenarios/`
+  (optional flow example).
+- **Config:** remove the "flow not available" validator. Add flow settings to
+  `ModelSettings` with quantity metadata: `smagorinsky_cs` (default 0.1; 0 turns
+  the subgrid model off), `poisson_tol` (default: the solver's). Keep
+  `effective_conductivity` the default mode.
+- **Model (flow mode):**
+  - each step: `FlowSolver.step` with the current liquid temperatures, then add
+    `q_adv` to `q_cells`, and run `ThermalSolver` with
+    `k_liquid = k_mol + k_turb` (no `k_effective`);
+  - the thermal dt is also capped by `FlowSolver.max_dt` (CFL);
+  - **wall heat transfer:** keep the Phase 1 `h_film` correlations (including
+    the nucleate-boiling fix) as the wall function, since a 5–20 mm grid cannot
+    resolve the thermal boundary layer. Document this;
+  - snapshots fill `velocity_u` and `velocity_w` from `slice_velocity`, NaN
+    outside the liquid;
+  - energy balance must still close to round-off.
+- **Runner and CLI:** work unchanged in flow mode. The pre-run estimate in the
+  GUI must account for the flow cost (time a few flow steps).
+- **GUI:**
+  - a model choice in the editor (effective conductivity / flow), with a note
+    that flow mode is much slower;
+  - an arrow overlay on the slice (decimated, scaled, toggleable), and an
+    optional speed colour map;
+  - the summary shows the peak speed.
+- **Acceptance:**
+  - every example scenario runs in flow mode at 20 mm to TARGET_REACHED with
+    the energy balance below 1e-9;
+  - report time-to-target for each example in both modes at 20 mm, plus the
+    40 L propane example at 10 mm in flow mode if it finishes within about
+    90 minutes;
+  - a GUI test runs a short flow-mode run and shows arrows;
+  - a screenshot of the slice with arrows for the user guide.
+
+## WP24: GPU port (L), after the user's `gpu_check.py` results
+
+- Port the flow kernels and the whole CG/V-cycle loop to Numba CUDA, keeping
+  the iteration loop on the device (few host round-trips per step), float32.
+- Automatic backend choice with CPU fallback; a setting to force CPU.
+- Validate under `NUMBA_ENABLE_CUDASIM=1` against the CPU solver at small sizes;
+  the user measures real speed on the GTX 1060.
 
 ## WP23: Calibrating the Phase 1 effective conductivity (S)
 
