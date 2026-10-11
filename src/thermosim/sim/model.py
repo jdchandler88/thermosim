@@ -11,6 +11,15 @@ and headspace start at ambient temperature.
 Time step: ``dt = min(stable_dt, 1 s, time to the next sample / snapshot / coefficient refresh,
 time to max time, time to `until_t`)``. The stable time step is evaluated once per coefficient
 refresh (the liquid-side coefficients that set it only change then).
+
+Flow mode (``model.liquid_transport == "flow"``, Phase 2): every step first advances the CPU flow
+solver (`thermosim.flow.FlowSolver`) with the current liquid temperatures. The advective heat
+source ``q_adv`` it returns (W per cell, sums to zero) is added to the heat source of the liquid
+cells, and the thermal solver runs with the molecular conductivity plus the subgrid conductivity
+``k_turb`` (refreshed with the coefficients). The thermal time step is also capped by the CFL
+limit of the flow solver (`FlowSolver.max_dt`). The wall heat transfer is unchanged: the
+Phase 1 film coefficients act as the wall function. Energy still closes, since the advective
+fluxes cancel in pairs. Snapshots carry the velocity in the slice plane (NaN outside the liquid).
 """
 
 from __future__ import annotations
@@ -36,6 +45,7 @@ from thermosim.core.types import (
     StopReason,
     ThermalState,
 )
+from thermosim.flow import FlowProps, FlowSolver, FlowState, props_from_physics
 from thermosim.geometry.build import build_domain, extract_slice, probe_values
 from thermosim.physics.properties import solid_props
 from thermosim.recording import Recorder, SnapshotStore, summarize
@@ -50,6 +60,7 @@ from thermosim.solver.thermal import ThermalSolver
 from thermosim.sources.build import build_heat_source
 
 MAX_DT_S = 1.0
+_FLOW_DIFFUSION_MARGIN = 0.8  # k_turb changes between refreshes: keep clear of the stability limit
 _EPS = 1e-9
 
 
@@ -117,11 +128,30 @@ class Model:
         self._hist_t: list[float] = []
         self._hist_v: list[float] = []
         self._hist_cmd: list[float] = []
+        # flow mode
+        self.flow: FlowSolver | None = None
+        self.flow_state: FlowState | None = None
+        self.flow_wall_s = 0.0
+        self.flow_steps = 0
+        self.peak_speed = 0.0
+        self._flow_props: FlowProps | None = None
+        self._q_total = np.zeros(self.domain.grid.shape)
+        if scenario.model.liquid_transport == "flow":
+            ms = scenario.model
+            self.flow = FlowSolver(
+                self.domain, smagorinsky_cs=float(ms.smagorinsky_cs), poisson_tol=ms.poisson_tol
+            )
+            self.flow_state = self.flow.initial_state()
 
     # ------------------------------------------------------------------ public API
     @property
     def stop_reason(self) -> StopReason | None:
         return self._stop
+
+    @property
+    def stable_dt_s(self) -> float:
+        """Thermal stability limit of the time step at the last coefficient refresh, s."""
+        return self._stable_dt
 
     @property
     def refresh_fraction(self) -> float:
@@ -182,14 +212,18 @@ class Model:
                 self._max_t - st.t,
                 until_t - st.t,
             )
+            if self.flow is not None:
+                assert self.flow_state is not None and self._flow_props is not None
+                dt = min(dt, self.flow.max_dt(self.flow_state, self._flow_props.nu))
             if dt < _EPS:
                 dt = _EPS * 10
             cmd = self.command.command(st.t, self._hist_v[-1])
             sp = self.source.power(cmd, st.t, dt)
             apply_source(self._coeffs, self._cache, sp)
-            flows = self.solver.step(
-                st, self._coeffs, dt, reuse_conductances=True, swap_buffers=True
-            )
+            coeffs = self._coeffs
+            if self.flow is not None:
+                coeffs = self._flow_step(st, coeffs, dt)
+            flows = self.solver.step(st, coeffs, dt, reuse_conductances=True, swap_buffers=True)
             self.cumulative.add(flows)
             self.gross_J += sp.gross_W * dt
             self._last_cmd, self._last_sp = cmd, sp
@@ -203,12 +237,33 @@ class Model:
         assert coeffs is not None
         return coeffs
 
+    def _flow_step(self, st: ThermalState, coeffs: StepCoefficients, dt: float) -> StepCoefficients:
+        """Advance the flow by ``dt`` and return the coefficients with ``q_adv`` added."""
+        flow, fstate, props = self.flow, self.flow_state, self._flow_props
+        assert flow is not None and fstate is not None and props is not None
+        t0 = time.perf_counter()
+        res = flow.step(fstate, st.T_liquid, props, dt)
+        self.flow_wall_s += time.perf_counter() - t0
+        self.flow_steps += 1
+        self.peak_speed = max(self.peak_speed, res.max_speed)
+        self._cache.k_turb = res.k_turb
+        np.add(coeffs.q_cells, res.q_adv, out=self._q_total)
+        return replace(coeffs, q_cells=self._q_total)
+
     def _refresh(self, t: float) -> None:
         t0 = time.perf_counter()
+        if self.flow is not None:
+            sg = float(self.scenario.liquid.specific_gravity)
+            props = props_from_physics(mean_liquid_T(self.domain, self.state.T_liquid), sg)
+            # The thermal solver's heat capacity uses the fill density, so the advected
+            # enthalpy must use it too; the buoyancy reference is the current volume mean.
+            self._flow_props = replace(props, rho=self._cache.rho0, T_ref=None)
         build_coefficients(self.domain, self.state, self.scenario, self._last_sp, self._cache)
         if self._coeff_hook is not None:
             self._coeff_hook(self._coeffs)
         self._stable_dt = self.solver.stable_dt(self._coeffs)
+        if self.flow is not None and self._cache.k_turb is not None:
+            self._stable_dt *= _FLOW_DIFFUSION_MARGIN
         self._next_refresh = t + self._refresh_dt
         self.refresh_wall_s += time.perf_counter() - t0
 
@@ -292,9 +347,16 @@ class Model:
         if snap:
             shell = dom.shell
             sl = dom.slice
+            slice_T = extract_slice(dom, st.T_liquid)
+            vel_u = vel_w = None
+            if self.flow is not None and self.flow_state is not None:
+                vel_u, vel_w = self.flow.slice_velocity(self.flow_state, sl.j)
+                outside = np.isnan(slice_T)
+                vel_u[outside] = np.nan
+                vel_w[outside] = np.nan
             snapshot = Snapshot(
                 t=st.t,
-                slice_T=extract_slice(dom, st.T_liquid),
+                slice_T=slice_T,
                 x_centers=sl.x_centers,
                 z_centers=sl.z_centers,
                 wall_left_z=shell.position[sl.wall_left, 2].astype(np.float64),
@@ -307,6 +369,8 @@ class Model:
                 probes=dict(probes),
                 T_mean=t_mean,
                 power_delivered=sp.delivered_W,
+                velocity_u=vel_u,
+                velocity_w=vel_w,
             )
             self.snapshots.add(snapshot)
             out.append(snapshot)

@@ -220,12 +220,20 @@ def test_six_cells_across_passes() -> None:
     _build(_narrow_vessel(0.30))  # exactly six 5 cm cells
 
 
-def test_flow_mode_is_rejected_with_message() -> None:
+def test_flow_mode_is_accepted_with_defaults() -> None:
     data = _propane()
     data["model"]["liquid_transport"] = "flow"
-    with pytest.raises(ScenarioError) as info:
+    sc = _build(data)
+    assert sc.model.liquid_transport == "flow"
+    assert sc.model.smagorinsky_cs == 0.1
+    assert sc.model.poisson_tol is None
+
+
+def test_flow_settings_are_validated() -> None:
+    data = _propane()
+    data["model"]["smagorinsky_cs"] = -0.1
+    with pytest.raises(ValidationError):
         _build(data)
-    assert str(info.value) == "flow mode is not available until Phase 2"
 
 
 # ------------------------------------------------------------------ burner

@@ -668,23 +668,35 @@ class ModelSettings(BaseModel):
     liquid_transport: Literal["effective_conductivity", "flow"] = Field(
         default="effective_conductivity",
         title="Liquid transport",
-        description="How heat moves in the liquid. 'flow' (buoyancy-driven flow) arrives in "
-        "Phase 2.",
+        description="How heat moves in the liquid. 'effective_conductivity' uses a mixing "
+        "closure and is fast. 'flow' solves the buoyancy-driven flow and is much slower.",
     )
     k_eff_scale: float = _num(
         "dimensionless",
         "Effective conductivity factor",
-        "Calibration factor multiplying the effective conductivity of the liquid.",
+        "Calibration factor multiplying the effective conductivity of the liquid "
+        "(effective-conductivity mode only).",
         1.0,
         gt=0.0,
         le=1000.0,
     )
-
-    @model_validator(mode="after")
-    def _flow_not_available(self) -> Self:
-        if self.liquid_transport == "flow":
-            raise ScenarioError("flow mode is not available until Phase 2")
-        return self
+    smagorinsky_cs: float = _num(
+        "dimensionless",
+        "Subgrid model constant",
+        "Smagorinsky constant of the subgrid eddy viscosity in flow mode (0.1 to 0.17 is "
+        "typical). 0 switches the subgrid model off.",
+        0.1,
+        ge=0.0,
+        le=0.5,
+    )
+    poisson_tol: float | None = _num(
+        "dimensionless",
+        "Pressure solver tolerance",
+        "Relative residual of the pressure solve in flow mode. Leave empty for the default (1e-6).",
+        None,
+        gt=0.0,
+        le=1e-2,
+    )
 
 
 # --------------------------------------------------------------------------- scenario

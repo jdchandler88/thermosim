@@ -9,11 +9,17 @@ Modelling choices (all SI, temperatures in K):
 * Liquid volumetric heat capacity comes from a 1-D table of ``rho(T, sg) * cp(T, sg)``
   interpolated linearly (0.1 K spacing), because evaluating the property correlations on every
   cell of a fine grid would dominate the run time.
-* ``k_liquid`` is uniform: `k_effective` at the mean liquid temperature with the temperature of
-  the heat source as the hot side (burner: weighted mean of the shell nodes under the
-  footprint; element: weighted mean of the element cells). When the source is off, the larger
-  of the wetted-area-weighted mean temperature of the wetted shell and the mean liquid
-  temperature is used.
+* ``k_liquid`` (effective-conductivity mode) is uniform: `k_effective` at the mean liquid
+  temperature with the temperature of the heat source as the hot side (burner: weighted mean of
+  the shell nodes under the footprint; element: weighted mean of the element cells). When the
+  source is off, the larger of the wetted-area-weighted mean temperature of the wetted shell and
+  the mean liquid temperature is used.
+* Flow mode (``model.liquid_transport == "flow"``): ``k_liquid`` is the molecular conductivity
+  of each cell plus the subgrid conductivity ``cache.k_turb`` of the flow solver (zero without a
+  subgrid model); the mixing closure ``k_effective`` is not used, because the advective heat
+  source of the flow solver carries the convective transport. The wall heat-transfer
+  coefficients ``h_film`` are unchanged in flow mode: they act as the thermal wall function,
+  since a 5 to 20 mm grid cannot resolve the thermal boundary layer at the wall.
 * Heated wall. ``h_film_liquid`` includes nucleate boiling above the local boiling point
   (Rohsenow), so a heated base stays within a few kelvin of saturation instead of
   superheating by hundreds of kelvin; the hot-side temperature handed to ``k_effective`` is
@@ -102,6 +108,9 @@ class CoefficientCache:
     wetted_shell: I64
     wetted_w: F64
     h_out_prev: F64
+    flow: bool = False
+    rho0: float = 1000.0
+    k_turb: F64 | None = None
     h_lid_prev: float = _H_OUT_GUESS
     coeffs: StepCoefficients | None = None
     h_out_full: F64 = field(default_factory=lambda: np.zeros(0))
@@ -134,6 +143,8 @@ def make_cache(
     wetted = np.flatnonzero(shell.wetted_area > 0.0).astype(np.int64)
     p = float(pr.pressure_at_altitude(atm.altitude_m))
     return CoefficientCache(
+        flow=scenario.model.liquid_transport == "flow",
+        rho0=rho0,
         p=p,
         sg=sg,
         T_sat=float(pr.wort_boiling_point(sg, p)),
@@ -242,11 +253,17 @@ def build_coefficients(
     )
     # The hot-side temperature of the mixing closure cannot exceed the boiling point by more
     # than the nucleate-boiling superheat: the wall is clamped by boiling (h_film_liquid).
-    T_src = min(_source_temperature(cache, state, on, T_mean), cache.T_sat + _SUPERHEAT_CAP_K)
-    k_eff = float(
-        cr.k_effective(_water_T(T_mean), T_src, domain.fill_height, sg, cache.k_eff_scale)
-    )
-    coeffs.k_liquid.fill(k_eff)
+    if cache.flow:
+        k_flat = coeffs.k_liquid.reshape(-1)
+        k_flat[cache.liq_flat] = pr.wort_conductivity(_water_T(T_liq), sg)
+        if cache.k_turb is not None:
+            k_flat[cache.liq_flat] += cache.k_turb.reshape(-1)[cache.liq_flat]
+    else:
+        T_src = min(_source_temperature(cache, state, on, T_mean), cache.T_sat + _SUPERHEAT_CAP_K)
+        k_eff = float(
+            cr.k_effective(_water_T(T_mean), T_src, domain.fill_height, sg, cache.k_eff_scale)
+        )
+        coeffs.k_liquid.fill(k_eff)
 
     # --- liquid-side film (nucleate boiling acts on the wetted surface, which is colder than
     # the shell node by the half-wall conduction drop, hence the series form)
