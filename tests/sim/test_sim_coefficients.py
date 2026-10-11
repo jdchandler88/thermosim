@@ -12,7 +12,7 @@ from thermosim.core.protocols import SourcePower
 from thermosim.core.types import OuterFace, ShellKind
 from thermosim.physics import correlations as cr
 from thermosim.physics import properties as pr
-from thermosim.sim.coefficients import apply_source, build_coefficients
+from thermosim.sim.coefficients import apply_source, build_coefficients, mean_liquid_T
 from thermosim.sim.model import Model
 from thermosim.sources.commands import ScheduleCommand
 
@@ -147,3 +147,50 @@ def test_rebuild_updates_in_place(example: Example) -> None:
     first = m._coeffs
     again = build_coefficients(m.domain, m.state, sc, None, m._cache)
     assert again is first
+
+
+def test_k_effective_hot_side_is_capped_at_boiling_plus_30_k(example: Example) -> None:
+    """A wall far above the boiling point must not inflate the mixing conductivity."""
+    sc = example("kettle_propane_40L")
+    m = _warm_model(sc, 30.0)
+    cache = m._cache
+    m.state.T_shell[cache.src_shell_idx] = 800.0  # absurdly hot burner footprint
+    on = SourcePower(delivered_W=6000.0, gross_W=17000.0)
+    c = build_coefficients(m.domain, m.state, sc, on, cache)
+    T_mean = mean_liquid_T(m.domain, m.state.T_liquid)
+    sg = sc.liquid.specific_gravity
+    capped = float(cr.k_effective(T_mean, cache.T_sat + 30.0, m.domain.fill_height, sg, 1.0))
+    assert c.k_liquid[m.domain.grid.is_liquid][0] == pytest.approx(capped, rel=2e-3)
+    assert cache.T_sat == pytest.approx(373.12, abs=0.2)  # sea level, SG 1.000
+
+
+def test_film_coefficient_boils_above_the_boiling_point(example: Example) -> None:
+    """Wall nodes above T_sat get the (much larger) nucleate-boiling coefficient."""
+    sc = example("kettle_propane_40L")
+    m = _warm_model(sc, 30.0)
+    cache = m._cache
+    rows = np.flatnonzero(m.domain.shell.kind[m.domain.shell.couple_shell] == int(ShellKind.BASE))
+    nodes = m.domain.shell.couple_shell[rows]
+    base_T = m.state.T_shell.copy()
+    m.state.T_shell[nodes] = cache.T_sat - 20.0
+    cold = build_coefficients(m.domain, m.state, sc, None, cache).h_film[rows].copy()
+    m.state.T_shell[nodes] = cache.T_sat + 60.0  # surface ~ T_sat + 10 K after the wall drop
+    hot = build_coefficients(m.domain, m.state, sc, None, cache).h_film[rows].copy()
+    m.state.T_shell[:] = base_T
+    assert np.all(cold <= cr.H_FILM_MAX)
+    assert np.all(hot > 2.0 * cold)
+    assert np.all(np.isfinite(hot))
+
+
+def test_heated_wall_does_not_superheat(example: Example) -> None:
+    """The propane kettle's base shell stays within ~60 K of the boiling point (it was ~2000 K)."""
+    sc = example("kettle_propane_40L", cell_size_m=0.02)
+    m = Model(sc, ScheduleCommand(sc))
+    base = m.domain.shell.kind == int(ShellKind.BASE)
+    worst = 0.0
+    for t in np.arange(30.0, 901.0, 30.0):
+        m.advance(float(t))
+        worst = max(worst, float(m.state.T_shell[base].max()))
+    # mid-plane node: boiling surface (~T_sat + 10 K) plus the 25 K conduction drop in the base
+    assert worst < m._cache.T_sat + 60.0
+    assert m.error is None

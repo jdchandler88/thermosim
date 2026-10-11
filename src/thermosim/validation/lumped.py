@@ -213,8 +213,8 @@ class LumpedModel:
 
     def _coefficients(self, T_liquid: float, T_shell: float, T_lid: float, firing: bool) -> _Coeffs:
         R, p, sg, Ta = self.R, self.p, self.sg, self.T_amb
-        h_base = float(cor.h_film_liquid(T_shell, T_liquid, OuterFace.UP, R / 2.0, sg))
-        h_side = float(cor.h_film_liquid(T_shell, T_liquid, OuterFace.SIDE, self.fill, sg))
+        h_base = float(cor.h_film_liquid(T_shell, T_liquid, OuterFace.UP, R / 2.0, sg, p))
+        h_side = float(cor.h_film_liquid(T_shell, T_liquid, OuterFace.SIDE, self.fill, sg, p))
         G_film = h_base * self.A_disk + h_side * 2.0 * math.pi * R * self.fill
 
         G_side = self._outer_G(

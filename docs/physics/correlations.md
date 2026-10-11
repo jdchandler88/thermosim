@@ -50,21 +50,49 @@ Sanity check (see tests): water at 95 C, 20 C still air, RH 0.5, D = 0.3 m gives
 V = 0). This is slightly above the "roughly 3-8 kW/m^2" range of the work-package text; the
 test accepts 3-10 kW/m^2.
 
-## Liquid-side film coefficient `h_film_liquid`
+## Liquid-side film coefficient `h_film_liquid(T_wall, T_bulk, orientation, L, sg, p=101325)`
 
 Wort properties at the film temperature; `Ra = g beta |dT| L^3 rho^2 cp / (mu k)`
-(beta floored at 1e-6 /K because water's beta is negative below 4 C).
+(beta floored at 1e-6 /K because water's beta is negative below 4 C). Each of the two
+temperatures is clipped to 0-120 C before averaging (the property fits stop there); the
+temperature difference itself is the true one.
 
 * Wall facing UP into the liquid (the base), hot wall: `Nu = 0.15 Ra^(1/3)`, L passed in
   (Incropera Eq. 9.31 form, applied for all Ra).
 * Hot wall facing DOWN, or cold wall facing UP: `Nu = 0.27 Ra^(1/4)` (Eq. 9.32).
 * Cold wall facing DOWN: as hot facing UP.
 * SIDE: Churchill-Chu with Pr of the wort, L = fill height.
-* Result clipped to [50, 5000] W/(m^2 K).
+* The natural-convection value is clipped to [50, 5000] W/(m^2 K).
 
-Limitation: this is subcooled natural convection only (requirement L4, no nucleate boiling).
-Near and above about 95 C real coefficients rise because of subcooled boiling, which is not
-modelled.
+**Nucleate boiling at the wall (added in WP10).** A kettle base at 50-200 kW/m^2 does not
+superheat by hundreds of kelvin: it runs (sub-cooled) nucleate boiling, with a wall superheat of
+5-25 K above the local boiling point. For `T_wall > T_sat(p, sg)` (`wort_boiling_point`, so
+altitude and gravity are included through the optional pressure `p`) the film coefficient is
+the smooth maximum of the natural-convection value and a boiling coefficient:
+
+* flux, Rohsenow (1952), Incropera Eq. 10.5:
+  `q = mu_l h_fg [g (rho_l - rho_v)/sigma]^(1/2) [cp_l (T_wall - T_sat) / (C_sf h_fg Pr_l)]^3`,
+  with `C_sf = 0.013` (water on polished stainless steel or copper, Incropera Table 10.1) and
+  `n = 1`; saturated-liquid wort properties at `T_sat`, `sigma` from the IAPWS 1994 release,
+  vapour density from the ideal-gas law. About 140 kW/m^2 at a 10 K superheat;
+* capped at the critical heat flux (Zuber 1958, Incropera Eq. 10.7, about 1.1 MW/m^2);
+* linearised to `h_b = q / (T_wall - T_bulk)` (zero where the wall is not hotter than the
+  bulk), and combined as `h = (h_nc^4 + h_b^4)^(1/4)`. `q` grows with the cube of the superheat,
+  so the combination is continuous with a continuous slope at `T_sat`.
+
+`h_film_through_wall(T_node, T_bulk, orientation, L, sg, r_wall, p)` is the form used by the
+model. The shell node temperature is the wall mid-plane value, so the wetted surface is colder
+by the conduction drop `q * t/(2k)` (25 K for 4 mm stainless at 200 kW/m^2); the boiling
+surface temperature is found from the series balance `h(T_w)(T_w - T_bulk) = (T_node - T_w)/r_wall`
+by bisection (film properties frozen at `(T_sat + T_bulk)/2`), and `h` is evaluated there. Nodes
+below the boiling point simply get `h_film_liquid` at the node temperature.
+
+Scope (requirement L4 unchanged): this only keeps a heated wall from superheating unphysically.
+Bulk boiling, vapour holdup, boil-off and film boiling are not modelled, and the liquid cells
+next to a strongly heated wall can still exceed `T_sat` because the effective-conductivity
+mixing closure carries the heat away more slowly than real boiling-driven mixing would.
+`k_effective` is called with a hot-side temperature of at most `T_sat + 30 K` for the same
+reason.
 
 ## Covered surface to headspace `h_headspace`
 

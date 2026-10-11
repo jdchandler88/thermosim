@@ -14,6 +14,10 @@ Modelling choices (all SI, temperatures in K):
   footprint; element: weighted mean of the element cells). When the source is off, the larger
   of the wetted-area-weighted mean temperature of the wetted shell and the mean liquid
   temperature is used.
+* Heated wall. ``h_film_liquid`` includes nucleate boiling above the local boiling point
+  (Rohsenow), so a heated base stays within a few kelvin of saturation instead of
+  superheating by hundreds of kelvin; the hot-side temperature handed to ``k_effective`` is
+  capped at the boiling point + 30 K. Bulk boiling and boil-off are not modelled (L4).
 * Outer shell coefficient. For insulated nodes the outer surface temperature is estimated by one
   fixed-point step with the previous coefficient. **Burner setups: the base nodes get
   ``h_out_shell = 0`` while the burner output is above zero**, because the burner efficiency
@@ -51,6 +55,7 @@ _TABLE_DT = 0.1
 _SURFACE_EMISSIVITY = 0.95  # free liquid surface
 _H_OUT_GUESS = 10.0  # W/(m^2 K), first estimate of the outer coefficient
 _MIN_GAP_M = 0.01
+_SUPERHEAT_CAP_K = 30.0  # K above the boiling point, cap of the k_effective hot side
 _AIR_T_MAX = 449.0  # air property fits are valid to 450 K
 
 
@@ -69,6 +74,7 @@ class CoefficientCache:
 
     p: float
     sg: float
+    T_sat: float
     T_amb: float
     wind: float
     rh: float
@@ -84,6 +90,7 @@ class CoefficientCache:
     base_mask: np.ndarray
     row_orient: I64
     row_length: F64
+    row_rw: F64
     has_cell_weights: bool
     has_shell_weights: bool
     src_shell_idx: I64
@@ -121,9 +128,11 @@ def make_cache(
     src_cell_idx = np.flatnonzero(cw > 0.0).astype(np.int64)
     src_shell_idx = np.flatnonzero(sw > 0.0).astype(np.int64)
     wetted = np.flatnonzero(shell.wetted_area > 0.0).astype(np.int64)
+    p = float(pr.pressure_at_altitude(atm.altitude_m))
     return CoefficientCache(
-        p=float(pr.pressure_at_altitude(atm.altitude_m)),
+        p=p,
         sg=sg,
+        T_sat=float(pr.wort_boiling_point(sg, p)),
         T_amb=float(atm.ambient_temp_K),
         wind=float(atm.wind_speed_m_s),
         rh=float(atm.relative_humidity),
@@ -139,6 +148,10 @@ def make_cache(
         base_mask=base,
         row_orient=row_orient,
         row_length=row_length,
+        row_rw=np.asarray(
+            shell.thickness[shell.couple_shell] / (2.0 * shell.k[shell.couple_shell]),
+            dtype=np.float64,
+        ),
         has_cell_weights=bool(src_cell_idx.size),
         has_shell_weights=bool(src_shell_idx.size),
         src_shell_idx=src_shell_idx,
@@ -221,20 +234,25 @@ def build_coefficients(
     coeffs.rho_c_liquid.reshape(-1)[cache.liq_flat] = np.interp(
         T_liq, cache.table_T, cache.table_rho_c
     )
-    T_src = _source_temperature(cache, state, on, T_mean)
+    # The hot-side temperature of the mixing closure cannot exceed the boiling point by more
+    # than the nucleate-boiling superheat: the wall is clamped by boiling (h_film_liquid).
+    T_src = min(_source_temperature(cache, state, on, T_mean), cache.T_sat + _SUPERHEAT_CAP_K)
     k_eff = float(
-        cr.k_effective(_water_T(T_mean), _water_T(T_src), domain.fill_height, sg, cache.k_eff_scale)
+        cr.k_effective(_water_T(T_mean), T_src, domain.fill_height, sg, cache.k_eff_scale)
     )
     coeffs.k_liquid.fill(k_eff)
 
-    # --- liquid-side film
+    # --- liquid-side film (nucleate boiling acts on the wetted surface, which is colder than
+    # the shell node by the half-wall conduction drop, hence the series form)
     if len(cache.row_orient):
-        coeffs.h_film[:] = cr.h_film_liquid(
-            _water_T(state.T_shell[shell.couple_shell]),
-            _water_T(T_flat[shell.couple_cell]),
+        coeffs.h_film[:] = cr.h_film_through_wall(
+            state.T_shell[shell.couple_shell],
+            T_flat[shell.couple_cell],
             cache.row_orient,
             cache.row_length,
             sg,
+            cache.row_rw,
+            p,
         )
 
     # --- outer shell
