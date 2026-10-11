@@ -88,3 +88,18 @@ against a real heat-up.
 - Part B tests pass, except `slow`. `RESULTS.md` is populated.
 - `docs/validation.md` exists and is clear enough for the user to follow
   without help.
+
+## Known issue to investigate (found during wave 1)
+
+The solver's parallel Numba kernels slow down catastrophically when the CPU is
+oversubscribed. On a 4-core machine at load average about 18,
+`test_newton_cooling_time_constant` ran for more than 30 minutes. The same test
+takes 2.8 s with `NUMBA_NUM_THREADS=1`.
+
+Investigate and fix, coordinating any `solver/` change through the coordinator:
+- try the threading layers (`omp`, `tbb`, `workqueue`);
+- use serial kernels below a cell-count threshold;
+- cap the thread count.
+
+Add a benchmark that runs while a CPU-burner process runs alongside. A user
+running the GUI on Windows while other programs are busy must not hit this.
