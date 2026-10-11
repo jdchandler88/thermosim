@@ -187,7 +187,9 @@ class Model:
             cmd = self.command.command(st.t, self._hist_v[-1])
             sp = self.source.power(cmd, st.t, dt)
             apply_source(self._coeffs, self._cache, sp)
-            flows = self.solver.step(st, self._coeffs, dt)
+            flows = self.solver.step(
+                st, self._coeffs, dt, reuse_conductances=True, swap_buffers=True
+            )
             self.cumulative.add(flows)
             self.gross_J += sp.gross_W * dt
             self._last_cmd, self._last_sp = cmd, sp

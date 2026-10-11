@@ -27,6 +27,10 @@ Sources
   horizontal enclosure.
 * Chilton, T.H., Colburn, A.P., Ind. Eng. Chem. 26 (1934) 1183 (heat/mass transfer analogy,
   Incropera Eq. 6.60 / Cengel Eq. 14-xx).
+* Rohsenow, W.M., Trans. ASME 74 (1952) 969 (nucleate pool boiling; Incropera Eq. 10.5, Table
+  10.1 for C_sf) and Zuber, N., Trans. ASME 80 (1958) 711 (critical heat flux, Incropera
+  Eq. 10.7), for the nucleate-boiling wall flux in :func:`h_film_liquid`.
+* IAPWS Release on the Surface Tension of Ordinary Water Substance (1994).
 * Effective conductivity: Rayleigh-Benard scaling Nu = C Ra^(1/3) (e.g. Kraichnan 1962;
   Grossmann & Lohse 2000); a modelling closure to be calibrated (WP23).
 """
@@ -34,6 +38,7 @@ Sources
 from __future__ import annotations
 
 from collections.abc import Callable
+from functools import lru_cache
 
 import numpy as np
 
@@ -45,7 +50,10 @@ Num = float | F64
 DT_MIN = 1e-3  # K, below this |dT| the natural-convection result is floored
 H_FLOOR_SMALL_DT = 1.0  # W/(m^2 K), floor of a natural-convection h when |dT| < DT_MIN
 H_FILM_MIN = 50.0  # W/(m^2 K), clip of the liquid-side film coefficient
-H_FILM_MAX = 5000.0
+H_FILM_MAX = 5000.0  # natural-convection part only; nucleate boiling can exceed it
+_BISECT_ITER = 9  # surface-temperature bisection of boiling rows (0.08 K for a 40 K bracket)
+_FILM_T_MIN, _FILM_T_MAX = 273.2, 392.9  # K, range of the wort property fits (with margin)
+C_SF_WATER = 0.013  # Rohsenow surface-fluid constant, water on polished stainless/copper
 K_EFF_C = 0.1  # Nu = C Ra^(1/3) coefficient of the effective conductivity closure
 HEADSPACE_GAP_M = 0.10  # m, assumed liquid-surface-to-lid distance of the enclosed cavity
 R_VAPOR = 8.314462618 / 0.01801528  # J/(kg K), water vapour gas constant
@@ -343,48 +351,198 @@ def q_evaporation(T_surf: Num, T_amb: Num, rh: Num, p: Num, h_conv: Num) -> Num:
 
 
 # ---------------------------------------------------------------- liquid side
-def _wort_film(T_wall: Num, T_bulk: Num, sg: Num) -> tuple[F64, F64, F64, F64, F64, F64]:
-    Tw, Tb, s = np.broadcast_arrays(_a(T_wall), _a(T_bulk), _a(sg))
-    Tf = 0.5 * (Tw + Tb)
-    rho = _a(pr.wort_density(Tf, s))
-    cp = _a(pr.wort_specific_heat(Tf, s))
-    k = _a(pr.wort_conductivity(Tf, s))
-    mu = _a(pr.wort_viscosity(Tf, s))
-    beta = np.maximum(_a(pr.wort_expansion(Tf, s)), 1e-6)  # water beta < 0 below 4 degC
-    return Tw - Tb, rho, cp, k, mu, beta
+def _film_T(T_a: F64, T_b: F64) -> F64:
+    """Film temperature of two temperatures that may lie outside the range of the property fits
+    (a wall above 120 degC, a superheated cell): each is clipped before averaging, so the film
+    shifts by a few kelvin at most while the temperature DIFFERENCE stays the true one."""
+    return 0.5 * (np.clip(T_a, _FILM_T_MIN, _FILM_T_MAX) + np.clip(T_b, _FILM_T_MIN, _FILM_T_MAX))  # type: ignore[no-any-return]
+
+
+@lru_cache(maxsize=8)
+def _wort_lut(sg: float) -> tuple[F64, F64, F64, F64, F64]:
+    """Wort (rho, cp, k, mu, beta) on a 0.1 K grid of film temperatures, for one gravity."""
+    n = int(np.ceil((_FILM_T_MAX - _FILM_T_MIN) / _LUT_STEP)) + 1
+    T = np.linspace(_FILM_T_MIN, _FILM_T_MIN + _LUT_STEP * (n - 1), n, dtype=np.float64)
+    return (
+        _a(pr.wort_density(T, sg)),
+        _a(pr.wort_specific_heat(T, sg)),
+        _a(pr.wort_conductivity(T, sg)),
+        _a(pr.wort_viscosity(T, sg)),
+        np.maximum(_a(pr.wort_expansion(T, sg)), 1e-6),  # water beta < 0 below 4 degC
+    )
+
+
+class _WortFilm:
+    """Wort properties at film temperatures (already inside the validity range of the fits).
+
+    Large arrays at one gravity are served from a 0.1 K lookup table (nearest node, error
+    < 0.05 K in temperature), which is much cheaper than interpolating the property tables for
+    every node.
+    """
+
+    __slots__ = ("beta", "cp", "k", "mu", "rho")
+
+    def __init__(self, Tf: F64, sg: F64) -> None:
+        if Tf.size > _LUT_MIN_SIZE and sg.ndim == 0:
+            idx = np.rint((Tf - _FILM_T_MIN) / _LUT_STEP).astype(np.intp)
+            self.rho, self.cp, self.k, self.mu, self.beta = (t[idx] for t in _wort_lut(float(sg)))
+            return
+        self.rho = _a(pr.wort_density(Tf, sg))
+        self.cp = _a(pr.wort_specific_heat(Tf, sg))
+        self.k = _a(pr.wort_conductivity(Tf, sg))
+        self.mu = _a(pr.wort_viscosity(Tf, sg))
+        self.beta = np.maximum(_a(pr.wort_expansion(Tf, sg)), 1e-6)  # water beta < 0 below 4 degC
+
+
+def _h_natural_liquid(dT: F64, f: _WortFilm, face: F64, L: F64) -> F64:
+    """Natural-convection film coefficient from the signed wall-bulk difference ``dT``."""
+    pr_l = f.cp * f.mu / f.k
+    Ra = _G * f.beta * np.maximum(np.abs(dT), DT_MIN) * L**3 * f.rho**2 * f.cp / (f.mu * f.k)
+    hot = dT >= 0.0
+    # cold wall facing DOWN behaves like hot facing UP; hot facing DOWN like cold facing UP
+    is_up = face == int(OuterFace.UP)
+    is_down = face == int(OuterFace.DOWN)
+    enhanced = (is_up & hot) | (is_down & ~hot)
+    Nu_enh = 0.15 * np.cbrt(Ra)
+    Nu_weak = 0.27 * np.sqrt(np.sqrt(Ra))
+    Nu_side = _nu_churchill_chu(Ra, _cc_den(pr_l))
+    Nu = np.where(is_up | is_down, np.where(enhanced, Nu_enh, Nu_weak), Nu_side)
+    return np.clip(Nu * f.k / L, H_FILM_MIN, H_FILM_MAX)  # type: ignore[no-any-return]
+
+
+def _surface_tension_water(T: F64) -> F64:
+    """Surface tension of water, N/m (IAPWS 1994): 0.2358 (1-Tr)^1.256 (1 - 0.625 (1-Tr))."""
+    tau = 1.0 - np.asarray(T, dtype=np.float64) / 647.096
+    return 0.2358 * tau**1.256 * (1.0 - 0.625 * tau)  # type: ignore[no-any-return]
+
+
+def _rohsenow_constants(T_sat: F64, sg: F64) -> tuple[F64, F64]:
+    """(K, q_chf) of the nucleate-boiling flux q = K (T_wall - T_sat)^3, capped at q_chf.
+
+    Rohsenow's correlation, Incropera, Fundamentals of Heat and Mass Transfer, Eq. 10.5
+    (Rohsenow 1952): q = mu_l h_fg [g (rho_l - rho_v) / sigma]^(1/2)
+    [cp_l dT_e / (C_sf h_fg Pr_l^n)]^3 with dT_e = T_wall - T_sat, n = 1 (water),
+    C_sf = ``C_SF_WATER`` (water on polished stainless steel or copper, Incropera Table 10.1).
+    Saturated-liquid properties at the local boiling point ``T_sat`` of the wort, vapour
+    density from the ideal-gas law. The cap is the critical heat flux (Zuber 1958, Incropera
+    Eq. 10.7); film boiling is not modelled.
+    """
+    f = _WortFilm(_film_T(T_sat, T_sat), sg)
+    h_fg = _a(pr.latent_heat_vaporization(np.clip(T_sat, _FILM_T_MIN, _FILM_T_MAX)))
+    rho_v = _a(pr.saturation_pressure(np.clip(T_sat, _FILM_T_MIN, _FILM_T_MAX))) / (R_VAPOR * T_sat)
+    sigma = _surface_tension_water(T_sat)
+    pr_l = f.cp * f.mu / f.k
+    K = (
+        f.mu
+        * h_fg
+        * np.sqrt(_G * (f.rho - rho_v) / sigma)
+        * (f.cp / (C_SF_WATER * h_fg * pr_l)) ** 3
+    )
+    q_chf = 0.131 * h_fg * np.sqrt(rho_v) * (sigma * _G * (f.rho - rho_v)) ** 0.25
+    return K, q_chf  # type: ignore[return-value]
+
+
+def _blend_boiling(h_nc: F64, Tw: F64, Tb: F64, T_sat: F64, K: F64, q_chf: F64) -> F64:
+    """Smooth maximum (p = 4) of the natural-convection and the linearised boiling coefficient."""
+    dT_e = np.maximum(Tw - T_sat, 0.0)
+    q_b = np.minimum(K * dT_e * dT_e * dT_e, q_chf)
+    h_b = np.where(Tw > Tb, q_b / np.maximum(Tw - Tb, DT_MIN), 0.0)
+    h2, hb2 = h_nc * h_nc, h_b * h_b
+    return np.sqrt(np.sqrt(h2 * h2 + hb2 * hb2))  # type: ignore[no-any-return]
 
 
 def h_film_liquid(
-    T_wall: Num, T_bulk: Num, orientation: OuterFace | np.ndarray, L: Num, sg: Num
+    T_wall: Num,
+    T_bulk: Num,
+    orientation: OuterFace | np.ndarray,
+    L: Num,
+    sg: Num,
+    p: Num = 101325.0,
 ) -> Num:
-    """Wall -> liquid natural-convection film coefficient (Phase 1), W/(m^2 K).
+    """Wall -> liquid film coefficient, W/(m^2 K), q = h (T_wall - T_bulk).
 
     ``orientation`` is the direction the wall faces INTO the liquid: UP (base, heated from
     below), SIDE (vertical wall), DOWN. Wort properties at the film temperature
-    (T_wall + T_bulk)/2; Ra = g beta |dT| L^3 rho^2 cp / (mu k).
+    (T_wall + T_bulk)/2 (each temperature clipped to 0-120 degC for the property fits only,
+    the temperature difference is the true one); Ra = g beta |dT| L^3 rho^2 cp / (mu k).
 
     * hot wall facing UP / cold wall facing DOWN: Nu = 0.15 Ra^(1/3) (Incropera Eq. 9.31 form,
       turbulent horizontal plate, applied for all Ra);
     * hot wall facing DOWN / cold wall facing UP: Nu = 0.27 Ra^(1/4) (Eq. 9.32);
     * SIDE: Churchill-Chu with L = fill height.
 
-    Result clipped to [50, 5000] W/(m^2 K). Subcooled natural convection only: above about
-    95 degC real coefficients increase through sub-cooled nucleate boiling (not modelled).
+    The natural-convection value is clipped to [50, 5000] W/(m^2 K).
+
+    **Nucleate boiling at the wall.** Where T_wall exceeds the local boiling point T_sat(p, sg)
+    (``p`` in Pa, default 101325), a hot wall drives nucleate (sub-cooled) boiling, which
+    carries the flux at a superheat of only a few kelvin. The flux is Rohsenow's correlation
+    (Incropera Eq. 10.5, C_sf = 0.013, n = 1; see `_rohsenow_constants`), linearised as
+    h_b = q_b / (T_wall - T_bulk) and combined with the natural-convection value by a smooth
+    maximum h = (h_nc^4 + h_b^4)^(1/4). Because q_b is proportional to (T_wall - T_sat)^3 the
+    combination is continuous with a continuous slope at T_sat. ``h_b`` is capped by the
+    critical heat flux. This only keeps heated walls from superheating unphysically; bulk
+    boiling, vapour holdup and boil-off remain out of scope (REQUIREMENTS L4).
     """
-    dT, rho, cp, k, mu, beta = _wort_film(T_wall, T_bulk, sg)
-    pr_l = cp * mu / k
-    Ra = _G * beta * np.maximum(np.abs(dT), DT_MIN) * _a(L) ** 3 * rho**2 * cp / (mu * k)
-    face = _a(orientation).astype(np.int64)
-    hot = dT >= 0.0
-    # cold wall facing DOWN behaves like hot facing UP; hot facing DOWN like cold facing UP
-    is_up = face == int(OuterFace.UP)
-    is_down = face == int(OuterFace.DOWN)
-    enhanced = (is_up & hot) | (is_down & ~hot)
-    Nu_enh = 0.15 * Ra ** (1.0 / 3.0)
-    Nu_weak = 0.27 * Ra**0.25
-    Nu_side = _nu_churchill_chu(Ra, _cc_den(pr_l))
-    Nu = np.where(is_up | is_down, np.where(enhanced, Nu_enh, Nu_weak), Nu_side)
-    h = np.clip(Nu * k / _a(L), H_FILM_MIN, H_FILM_MAX)
+    Tw, Tb, face, Ls = np.broadcast_arrays(
+        _a(T_wall), _a(T_bulk), _a(orientation).astype(np.int64), _a(L)
+    )
+    s = _a(sg)
+    f = _WortFilm(_film_T(Tw, Tb), s)
+    h = _h_natural_liquid(Tw - Tb, f, face, Ls)
+    T_sat = _a(pr.wort_boiling_point(sg, p))  # scalar when sg and p are scalars
+    if bool(np.any(Tw > T_sat)):
+        K, q_chf = _rohsenow_constants(T_sat, s)
+        h = _blend_boiling(h, Tw, Tb, T_sat, K, q_chf)
+    return _ret(h)
+
+
+def h_film_through_wall(
+    T_node: Num,
+    T_bulk: Num,
+    orientation: OuterFace | np.ndarray,
+    L: Num,
+    sg: Num,
+    r_wall: Num,
+    p: Num = 101325.0,
+) -> Num:
+    """Film coefficient of a wall node that conducts through a half-wall resistance, W/(m^2 K).
+
+    ``T_node`` is the temperature of a shell node (the wall mid-plane) and ``r_wall`` =
+    t / (2 k_wall) in m^2 K/W the conduction resistance between the node and the wetted
+    surface. Where the node is below the boiling point this is just :func:`h_film_liquid` at
+    the node temperature. Where it is above, nucleate boiling acts on the wetted surface,
+    which is colder than the node by the conduction drop, so the surface temperature T_w is
+    found from the series balance ``h(T_w) (T_w - T_bulk) = (T_node - T_w) / r_wall`` by
+    bisection (the left side rises and the right side falls with T_w, so it converges
+    unconditionally) with the film properties frozen at (T_sat + T_bulk)/2.
+    """
+    Tn, Tb, face, Ls, rw = np.broadcast_arrays(
+        _a(T_node), _a(T_bulk), _a(orientation).astype(np.int64), _a(L), _a(r_wall)
+    )
+    s, pp = _a(sg), _a(p)
+    h = np.array(h_film_liquid(Tn, Tb, face, Ls, s, pp), dtype=np.float64)
+    T_sat = _a(pr.wort_boiling_point(s, pp))  # scalar unless sg or p is an array
+    rows = np.flatnonzero(Tn > T_sat)
+    if rows.size == 0:
+        return _ret(h)
+    Tn_h, Tb_h, face_h, L_h, rw_h = (x[rows] for x in (Tn, Tb, face, Ls, rw))
+    s_h = s if s.ndim == 0 else np.broadcast_to(s, Tn.shape)[rows]
+    ts_h = T_sat if T_sat.ndim == 0 else np.broadcast_to(T_sat, Tn.shape)[rows]
+    f = _WortFilm(_film_T(ts_h, Tb_h), s_h)
+    K, q_chf = _rohsenow_constants(ts_h, s_h)
+
+    def film(Tw: F64) -> F64:
+        return _blend_boiling(
+            _h_natural_liquid(Tw - Tb_h, f, face_h, L_h), Tw, Tb_h, ts_h, K, q_chf
+        )
+
+    lo, hi = np.minimum(Tb_h, Tn_h), Tn_h.copy()
+    for _ in range(_BISECT_ITER):
+        Tw = 0.5 * (lo + hi)
+        rising = film(Tw) * (Tw - Tb_h) < (Tn_h - Tw) / rw_h  # film carries less: T_w rises
+        lo = np.where(rising, Tw, lo)
+        hi = np.where(rising, hi, Tw)
+    h[rows] = film(0.5 * (lo + hi))
     return _ret(h)
 
 

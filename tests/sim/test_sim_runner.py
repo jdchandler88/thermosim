@@ -238,7 +238,13 @@ def test_run_headless_matches_runner_and_reports_progress(example: Example) -> N
     r.start()
     _drain_until(r, _finished)
     assert r.result is not None
-    assert r.result.summary.time_to_target_s == pytest.approx(result.summary.time_to_target_s)
+    # The two runs split the simulation into chunks of different lengths (the chunk length follows
+    # the wall-clock speed, so it changes with the machine's load), and a chunk end shortens the
+    # step that crosses it; the explicit-Euler trajectories then differ by the integration error
+    # (about 2e-6 relative). Do not demand more than that.
+    assert r.result.summary.time_to_target_s == pytest.approx(
+        result.summary.time_to_target_s, rel=1e-4
+    )
 
 
 def test_run_headless_raises_solver_error(

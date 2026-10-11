@@ -17,6 +17,7 @@ WP02 property fits, within ~2 % of Table A.4). Tolerance 5 % unless stated.
 
 from __future__ import annotations
 
+import itertools
 import time
 import warnings
 
@@ -241,7 +242,9 @@ def test_h_film_liquid_basics() -> None:
     z = cr.h_film_liquid(350.0, 350.0, OuterFace.SIDE, 0.3, 1.04)
     assert np.isfinite(z) and z >= 50.0
     assert 50.0 <= cr.h_film_liquid(350.0, 350.0 + 1e-6, OuterFace.UP, 0.1, 1.04) <= 5000.0
-    assert 50.0 <= cr.h_film_liquid(390.0, 280.0, OuterFace.UP, 1.0, 1.0) <= 5000.0
+    # natural convection alone is capped at 5000; a wall far above the boiling point boils
+    assert 50.0 <= cr.h_film_liquid(360.0, 280.0, OuterFace.UP, 1.0, 1.0) <= 5000.0
+    assert cr.h_film_liquid(390.0, 280.0, OuterFace.UP, 1.0, 1.0) > 5000.0
     arr = cr.h_film_liquid(
         np.array([373.0, 373.0, 360.0]),
         340.0,
@@ -250,6 +253,71 @@ def test_h_film_liquid_basics() -> None:
         1.05,
     )
     assert np.asarray(arr).shape == (3,)
+
+
+def test_h_film_liquid_nucleate_boiling() -> None:
+    """Above the boiling point the wall flux follows Rohsenow's correlation (Incropera 10.5)."""
+    T_sat = float(pr.wort_boiling_point(1.0, 101325.0))
+    Tb = 363.15
+
+    def flux(dT_e: float, **kw: float) -> float:
+        Tw = T_sat + dT_e
+        return float(cr.h_film_liquid(Tw, Tb, OuterFace.UP, 0.09, 1.0, **kw)) * (Tw - Tb)
+
+    # Rohsenow by hand: water at 100 degC, C_sf = 0.013, n = 1, dT_e = 10 K -> about 140 kW/m^2
+    mu, h_fg, cp, k = 2.82e-4, 2.257e6, 4216.0, 0.679
+    rho_l, rho_v, sigma = 958.0, 0.598, 0.0589
+    q_roh = (
+        mu
+        * h_fg
+        * np.sqrt(G * (rho_l - rho_v) / sigma)
+        * (cp * 10.0 / (0.013 * h_fg * cp * mu / k)) ** 3
+    )
+    assert 1.2e5 < q_roh < 1.6e5
+    assert flux(10.0) == pytest.approx(q_roh, rel=0.12)
+    # continuous and monotonic through T_sat; the boiling part is cubic in the superheat
+    h_below = cr.h_film_liquid(T_sat - 1e-6, Tb, OuterFace.UP, 0.09, 1.0)
+    h_above = cr.h_film_liquid(T_sat + 1e-6, Tb, OuterFace.UP, 0.09, 1.0)
+    assert h_above == pytest.approx(h_below, rel=1e-5)
+    fluxes = [flux(d) for d in (0.5, 1.0, 2.0, 4.0, 8.0, 12.0)]
+    assert all(b > a for a, b in itertools.pairwise(fluxes))
+    # larger than the natural-convection value; capped by the critical heat flux (~1.1 MW/m^2)
+    assert cr.h_film_liquid(T_sat + 10.0, Tb, OuterFace.UP, 0.09, 1.0) > 5000.0
+    assert flux(40.0) <= 1.2e6
+    # a lower pressure lowers the boiling point, so the same wall boils harder
+    Tw = 373.0
+    assert cr.h_film_liquid(Tw, Tb, OuterFace.UP, 0.09, 1.0, 80000.0) > 2 * cr.h_film_liquid(
+        Tw, Tb, OuterFace.UP, 0.09, 1.0, 101325.0
+    )
+    # a cold bulk next to a boiling wall: array input keeps its shape and stays finite
+    arr = cr.h_film_liquid(
+        np.array([T_sat + 3.0, 330.0, T_sat + 20.0]), np.array([300.0, 300.0, 372.0]),
+        np.array([OuterFace.UP, OuterFace.SIDE, OuterFace.UP]), 0.2, 1.05,
+    )  # fmt: skip
+    assert np.asarray(arr).shape == (3,) and np.all(np.isfinite(arr))
+
+
+def test_h_film_through_wall() -> None:
+    """The half-wall conduction drop is taken from the boiling surface, not from the node."""
+    T_sat = float(pr.wort_boiling_point(1.0, 101325.0))
+    Tb = np.array([350.0, 350.0, 350.0])
+    Tn = np.array([340.0, T_sat + 5.0, T_sat + 60.0])
+    r_wall = 4e-3 / (2.0 * 16.0)  # 4 mm stainless half wall
+    face = np.array([OuterFace.UP] * 3)
+    h = np.asarray(cr.h_film_through_wall(Tn, Tb, face, 0.09, 1.0, r_wall))
+    # below the boiling point it is the plain film coefficient at the node temperature
+    assert h[0] == pytest.approx(float(cr.h_film_liquid(Tn[0], Tb[0], OuterFace.UP, 0.09, 1.0)))
+    for i in (1, 2):
+        # series balance: film flux at the surface temperature = conduction flux through the wall
+        q = (Tn[i] - Tb[i]) / (1.0 / h[i] + r_wall)
+        Tw = Tn[i] - q * r_wall
+        assert T_sat < Tw < Tn[i]
+        assert float(cr.h_film_liquid(Tw, Tb[i], OuterFace.UP, 0.09, 1.0)) * (Tw - Tb[i]) == (
+            pytest.approx(q, rel=0.05)
+        )
+    # the surface of the hottest node is held within a few kelvin of the boiling point
+    q = (Tn[2] - Tb[2]) / (1.0 / h[2] + r_wall)
+    assert Tn[2] - q * r_wall - T_sat < 25.0
 
 
 def test_h_headspace() -> None:
