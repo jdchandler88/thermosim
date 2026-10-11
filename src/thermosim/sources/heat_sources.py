@@ -123,8 +123,10 @@ def deposition_for_element(cfg: Element, domain: Domain) -> HeatDeposition:
     """Spread an element's heat along its path over the liquid cells it passes through.
 
     The polyline is sampled at equal arc-length steps of at most dx/4. Each sample carries an
-    equal share of the path length, which goes to the cell containing it. Raises GeometryError
-    if any sample is in a non-liquid cell or above the fill height (dry firing).
+    equal share of the path length, which goes to the cell containing it. A sample whose cell
+    lies outside the liquid footprint (near the wall) goes to the nearest liquid cell in its
+    layer. Raises GeometryError if any sample is above the fill height (dry firing) or outside
+    the vessel (radius > inner radius, or below the base).
     """
     grid = domain.grid
     dx = grid.dx
@@ -144,20 +146,45 @@ def deposition_for_element(cfg: Element, domain: Domain) -> HeatDeposition:
     pos = pts[k] + local[:, np.newaxis] * seg[k]
 
     fill = float(domain.fill_height)
-    ijk = np.floor((pos - grid.origin) / dx).astype(np.int64)
-    shape = np.array(grid.shape, dtype=np.int64)
-    in_box = np.all((ijk >= 0) & (ijk < shape), axis=1)
-    clipped = np.clip(ijk, 0, shape - 1)
-    liquid = grid.is_liquid[clipped[:, 0], clipped[:, 1], clipped[:, 2]] & in_box
-    bad = ~liquid | (pos[:, 2] > fill + _TOL)
-    if np.any(bad):
-        z_bad = float(pos[int(np.argmax(bad)), 2])
+    radius = float(domain.inner_radius)
+    z = pos[:, 2]
+    r = np.hypot(pos[:, 0], pos[:, 1])
+    above = z > fill + _TOL
+    if np.any(above):
+        z_bad = float(z[int(np.argmax(above))])
         raise GeometryError(
             f"element segment at z={z_bad:.3f} m is above the liquid (fill {fill:.3f} m)"
         )
+    outside = (r > radius + _TOL) | (z < -_TOL)
+    if np.any(outside):
+        bad_pos = pos[int(np.argmax(outside))]
+        raise GeometryError(
+            f"element segment at ({bad_pos[0]:.3f}, {bad_pos[1]:.3f}, {bad_pos[2]:.3f}) m "
+            f"is outside the vessel (inner radius {radius:.3f} m)"
+        )
+
+    # Each sample goes to the liquid cell containing it. A sample whose cell lies outside the
+    # staircase footprint (near the wall) goes to the nearest liquid cell in the same layer,
+    # by horizontal distance between cell centres.
+    ijk = np.floor((pos - grid.origin) / dx).astype(np.int64)
+    shape = np.array(grid.shape, dtype=np.int64)
+    cells = np.clip(ijk, 0, shape - 1)
+    liquid = grid.is_liquid[cells[:, 0], cells[:, 1], cells[:, 2]]
+    layer_cache: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+    for idx in np.flatnonzero(~liquid):
+        layer = int(cells[idx, 2])
+        if layer not in layer_cache:
+            ij = np.argwhere(grid.is_liquid[:, :, layer])
+            centers = grid.origin[:2] + (ij + 0.5) * dx
+            layer_cache[layer] = (ij, centers)
+        ij, centers = layer_cache[layer]
+        d2 = np.sum((centers - pos[idx, :2]) ** 2, axis=1)
+        nearest = ij[int(np.argmin(d2))]
+        cells[idx, 0] = nearest[0]
+        cells[idx, 1] = nearest[1]
 
     cell_weights = np.zeros(grid.shape, dtype=np.float64)
-    np.add.at(cell_weights, (clipped[:, 0], clipped[:, 1], clipped[:, 2]), 1.0 / n_samples)
+    np.add.at(cell_weights, (cells[:, 0], cells[:, 1], cells[:, 2]), 1.0 / n_samples)
     return HeatDeposition(
         cell_weights=cell_weights,
         shell_weights=np.zeros(domain.shell.n, dtype=np.float64),

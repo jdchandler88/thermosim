@@ -222,3 +222,44 @@ def test_element_power_is_all_delivered() -> None:
     assert power.delivered_W == pytest.approx(2750.0)
     assert src.electric_kwh(3.6e6) == pytest.approx(1.0)
     assert src.fuel_kg(46.35e6) == 0.0
+
+
+# ----------------------------------------------------------------- near-wall element samples
+@pytest.mark.parametrize("wall_offset_cells", [0.6, 0.3])
+def test_ring_element_near_wall_deposits_fully(wall_offset_cells: float) -> None:
+    domain = _real_domain("kettle_propane_40L", 0.02)
+    grid = domain.grid
+    radius = domain.inner_radius - wall_offset_cells * grid.dx
+    theta = np.linspace(0.0, 2.0 * math.pi, 129)  # closed loop
+    path = [(radius * math.cos(t), radius * math.sin(t), 0.05) for t in theta]
+
+    # Dense sweep of the same ring: at 0.6 dx every sample is in a liquid cell, at 0.3 dx some
+    # are not. The 0.3 dx case therefore exercises the nearest-cell fallback.
+    dense = np.linspace(0.0, 2.0 * math.pi, 20000, endpoint=False)
+    xyz = np.stack(
+        [radius * np.cos(dense), radius * np.sin(dense), np.full(len(dense), 0.05)], axis=1
+    )
+    ijk = np.floor((xyz - grid.origin) / grid.dx).astype(int)
+    outside_cells = ~grid.is_liquid[ijk[:, 0], ijk[:, 1], ijk[:, 2]]
+    if wall_offset_cells < 0.5:
+        assert outside_cells.any()
+
+    dep = deposition_for_element(_element_cfg(path), domain)
+    w = dep.cell_weights
+    assert w.min() >= 0.0
+    assert w.sum() == pytest.approx(1.0, abs=1e-12)
+    assert not w[~grid.is_liquid].any()
+    assert not dep.shell_weights.any()
+
+
+def test_segment_above_fill_height_still_raises() -> None:
+    domain = _real_domain("kettle_propane_40L", 0.02)
+    z = domain.fill_height + 0.02
+    with pytest.raises(GeometryError, match="above the liquid"):
+        deposition_for_element(_element_cfg([(-0.05, 0.0, z), (0.05, 0.0, z)]), domain)
+
+
+def test_segment_outside_vessel_raises() -> None:
+    domain = box_domain(10, 10, 4, DX)  # inner radius 0.05 m
+    with pytest.raises(GeometryError, match="outside the vessel"):
+        deposition_for_element(_element_cfg([(0.06, 0.0, 0.01), (0.06, 0.0, 0.02)]), domain)
