@@ -392,9 +392,12 @@ class Runner(Protocol):
 # config/schema.py — pydantic v2 models. All numeric fields:
 #   Field(..., title="Inner diameter", description=..., ge=..., le=...,
 #         json_schema_extra={"quantity": "<Quantity>"})
-Quantity = Literal["temperature", "temperature_delta", "length", "area", "volume", "power",
-                   "speed", "time", "fraction", "specific_gravity", "conductivity",
-                   "density", "specific_heat", "thermal_resistance", "dimensionless"]
+Quantity = Literal["temperature", "temperature_delta", "temperature_rate", "length", "altitude",
+                   "area", "volume", "power", "speed", "time", "fraction", "specific_gravity",
+                   "conductivity", "density", "specific_heat", "thermal_resistance", "dimensionless"]
+# Display units: time is shown in seconds in both systems; altitude in m / ft;
+# temperature_rate in °C/min / °F/min. Scenario(...) constructors may raise pydantic
+# ValidationError for field-level errors; config.io converts everything to ScenarioError.
 
 class CustomMaterial(BaseModel): density; specific_heat; conductivity; emissivity
 class Vessel(BaseModel):
