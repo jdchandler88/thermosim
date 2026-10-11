@@ -49,7 +49,8 @@ Implement CONTRACTS §5 exactly.
      diameter is at least 6 cells.
    - `model.liquid_transport == "flow"` raises `ScenarioError("flow mode is
      not available until Phase 2")`.
-3. **Units** (`units.py`). The metric display uses °C, L, kW, mm, m/s, min,
+3. **Units** (`units.py`). US is the default unit system in the GUI and CLI
+   (REQUIREMENTS B7). The metric display uses °C, L, kW, mm, m/s, min,
    kPa. US uses °F, gal (US), BTU/hr, in, mph, min. Temperature differences
    convert by the scale factor only. Round-tripping `to_display` and
    `from_display` must agree to within 1e-12 relative. Provide

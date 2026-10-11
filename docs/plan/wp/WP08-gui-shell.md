@@ -93,7 +93,8 @@ runner.
      dropdowns for the time and temperature columns and their units, then
      overlays the data and fills in the comparison panel.
 8. **Units toggle:** switches every displayed value immediately, without
-   changing the stored SI values. The choice is persisted with `QSettings`.
+   changing the stored SI values. **The default is US** on first launch;
+   after that the choice is remembered with `QSettings`.
 9. **`gui/fake_runner.py`:** `FakeRunner(scenario, mode)` implements the
    `Runner` protocol in a background thread.
    - It generates plausible synthetic data: a 2D temperature field that warms

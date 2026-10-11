@@ -4,7 +4,18 @@
 tightly than Phase 1 on purpose. The coordinator refines them, and updates
 CONTRACTS.md, once WP20 reports and Phase 1 results are known.
 
-**Prerequisite:** the user's graphics card (REQUIREMENTS open question Q2).
+**Target hardware:** an NVIDIA **GTX 1060** (Pascal architecture, CUDA compute
+capability 6.1, 3 or 6 GB of memory). Consequences that every Phase 2 package
+must respect:
+- **Use CUDA 12.x toolchains and wheels.** CUDA 13 dropped support for Pascal
+  cards, and some recent PyTorch/CuPy builds have dropped compute capability
+  6.1. WP20 must confirm a pinned, working combination on Windows.
+- **Use float32 for the flow fields.** Consumer Pascal cards run float64 at
+  1/32 speed. Energy accounting may keep float64 accumulators.
+- **Memory budget:** at most about 2.5 GB, so the 3 GB variant works. A 128³
+  grid with about 10 float32 fields is roughly 85 MB, which is comfortable.
+- **Always keep a CPU fallback** (Numba), so the program still runs on
+  machines without an NVIDIA GPU.
 
 ## Shared design
 
@@ -48,12 +59,13 @@ CONTRACTS.md, once WP20 reports and Phase 1 results are known.
 
 - **Goal:** choose the compute backend for the flow solver on the user's
   hardware.
-- **Candidates:**
-  - Numba CPU (baseline);
-  - Taichi (CUDA, Vulkan, Metal, CPU; check that the project is still
-    maintained);
-  - PyTorch (CUDA, MPS, CPU);
-  - CuPy (NVIDIA only).
+- **Candidates** (target: the GTX 1060 on Windows):
+  - Numba CPU (the baseline and required fallback);
+  - Numba CUDA (custom kernels in the same language as Phase 1);
+  - CuPy (raw kernels plus array operations);
+  - Taichi (check that the project is still maintained and supports Pascal);
+  - PyTorch (check the newest build that still supports compute capability
+    6.1).
 - **Task:**
   - Implement the same minimal 3D masked-grid pressure Poisson solve (a
     cylinder mask, 64³ and 128³) and one semi-Lagrangian advection step in
@@ -83,7 +95,7 @@ CONTRACTS.md, once WP20 reports and Phase 1 results are known.
   `velocity_u` and `velocity_w` on the slice.
 - GUI: an arrow overlay (decimated quiver) and/or streamlines on the slice,
   with a toggle; and a speed colormap option.
-- Performance target (to be confirmed after WP20): a 45 sim-min heat-up at
+- Performance target (to be confirmed after WP20) on the GTX 1060: a 45 sim-min heat-up at
   10 mm cells in under 30 min on the user's GPU.
 
 ## WP23: Calibrating the Phase 1 effective conductivity (S)

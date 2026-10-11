@@ -15,6 +15,7 @@ make it easy to install and launch on Windows.
 - `packaging/**`
 - `docs/user-guide.md`
 - `tests/gui_integration/**`
+- `ThermoSim/` (to delete it), root `README.md`, `.gitignore` (Java entries)
 - **Small fixes elsewhere in `gui/`:** allowed, but list each in the PR
   description, since WP08 is finished by then.
 
@@ -53,6 +54,11 @@ make it easy to install and launch on Windows.
    screenshot test). Covers creating a setup, running in fast mode, real-time
    mode, reading the outputs, importing measured data and comparing, and what
    each setting means physically.
+9. **Remove the legacy Java code** (REQUIREMENTS T5), as the last commit of
+   this work package:
+   - delete `ThermoSim/` and the NetBeans/Java entries in `.gitignore`;
+   - rewrite the root `README.md` with a short description, install and launch
+     instructions, and links to `REQUIREMENTS.md` and the user guide.
 
 ## Acceptance criteria
 

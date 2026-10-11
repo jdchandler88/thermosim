@@ -53,10 +53,8 @@ take under 10% of the run time at default settings.
   - Initial state: the liquid starts at `initial_temp_K`. The shell, lid and
     headspace start at `ambient_temp_K`.
 
-    **[Proposed default — document it in the scenario docs]** the vessel
-    starts at air temperature. Add an optional
-    `scenario.vessel.initial_temp_K` only if the coordinator approves a
-    contract change.
+    This is **decided**: the vessel starts at air temperature. Document it
+    in the scenario docs.
 - **Time step:**
   - dt = min(`solver.stable_dt(coeffs)`, the time to the next sample,
     snapshot or coefficient refresh, the time remaining to max time).
@@ -112,7 +110,7 @@ take under 10% of the run time at default settings.
 
 | Command | Behavior |
 |---|---|
-| `thermosim run SCENARIO.toml [--out DIR] [--cell-size M] [--max-time S] [--quiet]` | Headless run. Prints a progress bar (simple `\r` text, no extra dependency) and then the summary table. Writes `save_run` output to `--out`, which defaults to `runs/<scenario-name>-<timestamp>/`. |
+| `thermosim run SCENARIO.toml [--out DIR] [--cell-size M] [--max-time S] [--units us\|metric] [--quiet]` | Headless run. Prints a progress bar (simple `\r` text, no extra dependency) and then the summary table, in US units by default. Writes `save_run` output to `--out`, which defaults to `runs/<scenario-name>-<timestamp>/`. |
 | `thermosim validate SCENARIO.toml` | Loads and validates the scenario, and builds the domain (catching geometry errors). Prints the cell count, estimated memory, and estimated run time from a quick 50-step benchmark. |
 | `thermosim examples [--write DIR]` | Lists the example scenarios, or writes them out. |
 | `thermosim compare RUN_DIR MEASURED.csv [--probe NAME] [--temp-unit C\|F] [--time-unit s\|min]` | Prints the comparison metrics. |

@@ -1,8 +1,8 @@
 # Phase 3: PID controller in the loop
 
-**Starts after Phase 2.** Open question Q6 (heat-up only, or also hold and
-step through mash rest schedules) must be answered first, because it decides
-whether a setpoint *schedule* is needed.
+**Starts after Phase 2.** Scope is **decided**: the controller heats to a
+single setpoint and holds it. There are no mash step schedules or setpoint
+schedules.
 
 ## WP30: Controller model (M)
 
@@ -32,7 +32,7 @@ whether a setpoint *schedule* is needed.
 
 ## WP31: PID in the GUI and tuning aids (M)
 
-- A controller tab in the editor: gains, setpoint (or a schedule, per Q6), and
+- A controller tab in the editor: gains, a single setpoint, and
   sensor settings.
 - **Real-time mode:** live gain and setpoint adjustment, and a chart showing
   the setpoint and output traces.

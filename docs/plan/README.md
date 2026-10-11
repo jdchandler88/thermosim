@@ -96,7 +96,7 @@ src/thermosim/
 tests/<area>/             # each WP owns tests/<its area>/
 benchmarks/               # WP10
 docs/plan/                # coordinator
-ThermoSim/                # legacy Java — DO NOT TOUCH (see REQUIREMENTS T5)
+ThermoSim/                # legacy Java — do not touch; WP11 deletes it at the end (REQUIREMENTS T5)
 ```
 
 **Ownership rule:** an agent edits only the paths its work-package file lists
@@ -194,5 +194,5 @@ one wrong or insufficient:
 - [ ] When WP08 and WP09 have merged, launch WP11.
 - [ ] Phase 1 sign-off: the user runs the GUI on Windows and checks a real
       heat-up if possible.
-- [ ] Before Phase 2: get the user's graphics card details and refine
-      PHASE2.md.
+- [ ] Before Phase 2: refine PHASE2.md using the WP20 results (target GPU:
+      GTX 1060).
