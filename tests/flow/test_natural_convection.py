@@ -4,7 +4,8 @@ de Vahl Davis, G., "Natural convection of air in a square cavity: a bench mark n
 solution", Int. J. Numer. Meth. Fluids 3 (1983) 249-264. Pr = 0.71, hot left wall, cold right
 wall, adiabatic top and bottom, no slip everywhere. Mean Nusselt number on the hot wall:
 Ra = 1e3: 1.118, 1e4: 2.243, 1e5: 4.519. Peak velocities (in units of alpha / L, same paper):
-Ra = 1e3: u 3.649, w 3.697; Ra = 1e4: u 16.178, w 19.617.
+Ra = 1e3: u 3.649, w 3.697; Ra = 1e4: u 16.178, w 19.617; Ra = 1e5: u 34.73, w 68.59
+(u on the vertical mid-plane, w on the horizontal mid-plane).
 
 The cavity is a thin 3-D box (one cell in y with free-slip y boundaries: exactly 2-D) in
 non-dimensional units (L = 1, g = beta = dT = 1, rho = cp = 1). The flow solver provides the
@@ -47,6 +48,13 @@ def run_cavity(n: int, ra: float, *, dtype=np.float64, max_steps: int = 40000):
     return st, T, alpha
 
 
+def midplane_peaks(st, n: int) -> tuple[float, float]:
+    """Peak horizontal velocity on the vertical mid-plane x = 0.5 and peak vertical velocity on the
+    horizontal mid-plane z = 0.5 (the quantities tabulated by de Vahl Davis). For even ``n`` those
+    planes are cell faces."""
+    return float(st.u[n // 2, 0, :].max()), float(st.w[:, 0, n // 2].max())
+
+
 def nusselt_hot(T: np.ndarray, dx: float) -> float:
     """Mean Nusselt number on the hot wall (x = 0): -dT/dx at the wall from the 3-point
     one-sided formula through T_wall = 1 and the first two cell values (L = dT = 1)."""
@@ -70,8 +78,9 @@ def test_de_vahl_davis(ra, nu_ref, umax_ref, wmax_ref):
     nu_hot, nu_cold = nusselt_hot(T, dx), nusselt_cold(T, dx)
     assert nu_hot == pytest.approx(nu_ref, rel=0.05)
     assert nu_cold == pytest.approx(nu_hot, rel=2e-2)  # heat in = heat out
-    assert st.u.max() / alpha == pytest.approx(umax_ref, rel=0.05)
-    assert st.w.max() / alpha == pytest.approx(wmax_ref, rel=0.05)
+    u_mid, w_mid = midplane_peaks(st, n)
+    assert u_mid / alpha == pytest.approx(umax_ref, rel=0.05)
+    assert w_mid / alpha == pytest.approx(wmax_ref, rel=0.05)
 
 
 @pytest.mark.slow
@@ -79,7 +88,9 @@ def test_de_vahl_davis_ra1e5():
     st, T, alpha = run_cavity(48, 1e5, max_steps=80000)
     nu_hot = nusselt_hot(T, 1.0 / 48)
     assert nu_hot == pytest.approx(4.519, rel=0.05)
-    assert st.w.max() / alpha == pytest.approx(68.59, rel=0.07)  # de Vahl Davis: 68.59
+    u_mid, w_mid = midplane_peaks(st, 48)
+    assert u_mid / alpha == pytest.approx(34.73, rel=0.05)
+    assert w_mid / alpha == pytest.approx(68.59, rel=0.05)
 
 
 @pytest.mark.slow

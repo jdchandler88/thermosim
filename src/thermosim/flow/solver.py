@@ -21,6 +21,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
+import numba
 import numpy as np
 from numpy.typing import DTypeLike, NDArray
 
@@ -123,7 +124,8 @@ class FlowSolver:
             their sums are always float64.
         momentum_scheme: ``"vanleer"`` (TVD, default), ``"central"`` or ``"upwind"``.
         scalar_scheme: advection scheme of the heat flux, same choices.
-        poisson_tol: relative CG residual (default 1e-9 float64, 1e-5 float32).
+        poisson_tol: relative CG residual (default 1e-6 float64, 1e-5 float32); the
+            divergence left after the projection is below ``poisson_tol`` times the velocity.
         poisson_max_iter: CG iteration cap.
         top_wall: ``None`` (default) for the physical flat free surface (w = 0, free slip); a
             pair ``(Ux, Uy)`` m/s makes the top a no-slip wall moving at that velocity (test
@@ -131,6 +133,9 @@ class FlowSolver:
         side_slip: ``(slip_x, slip_y)``; free slip on the *grid-boundary* walls normal to x /
             y (test hook: a thin box with ``slip_y`` is a 2-D problem, ``slip_x`` makes
             symmetry planes). Walls next to solid cells are always no slip.
+        threads: Numba threads used by ``step`` (set for the calling thread). ``None`` picks one
+            thread per 100 000 liquid cells (at most the available threads), because the launch
+            overhead of the many small kernels outweighs the gain on small grids.
     """
 
     domain: Domain | LiquidGrid
@@ -142,6 +147,7 @@ class FlowSolver:
     poisson_max_iter: int = 200
     top_wall: tuple[float, float] | None = None
     side_slip: tuple[bool, bool] = (False, False)
+    threads: int | None = None
     grid: FlowGrid = field(init=False)
     poisson: PoissonSolver = field(init=False)
 
@@ -165,7 +171,7 @@ class FlowSolver:
         self._ws = np.zeros((nx, ny, nz + 1), d)
         self._b = np.zeros(shape, d)
         self._phi = np.zeros(shape, d)
-        self._T = np.zeros(shape, d)
+        self._T = np.zeros(shape, np.float64)  # T - T_ref of the current step
         self._nut = np.zeros(shape, d)
         self._Fx = np.zeros((nx + 1, ny, nz))
         self._Fy = np.zeros((nx, ny + 1, nz))
@@ -179,6 +185,9 @@ class FlowSolver:
             self._top = (1.0, 0.0, 0.0)  # free slip: (f, vo_u, vo_v)
         else:
             self._top = (-1.0, 2.0 * self.top_wall[0], 2.0 * self.top_wall[1])
+        if self.threads is None:
+            pool = int(numba.config.NUMBA_NUM_THREADS)  # type: ignore[attr-defined]
+            self.threads = max(1, min(pool, g.n_liquid // 100_000))
         self._mscheme = _SCHEMES[self.momentum_scheme]
         self._sscheme = _SCHEMES[self.scalar_scheme]
 
@@ -206,11 +215,15 @@ class FlowSolver:
         return max(self._max_abs(state.u), self._max_abs(state.v), self._max_abs(state.w))
 
     def max_dt(self, state: FlowState, nu: float) -> float:
-        """Largest stable time step, s: CFL <= 0.5 (``(|u|+|v|+|w|)_max dt / dx``) and half the
-        explicit-viscosity limit ``dx^2 / (6 (nu + nu_t,max))``. ``inf`` if there is neither
-        flow nor viscosity."""
+        """Largest stable time step, s: CFL <= 0.5 (``max_cell(|u|+|v|+|w|) dt / dx`` with the
+        face velocities averaged to the cell centre) and half the explicit-viscosity limit
+        ``dx^2 / (6 (nu + nu_t,max))``. ``inf`` if there is neither flow nor viscosity."""
         dx = self.grid.dx
-        s = self._max_abs(state.u) + self._max_abs(state.v) + self._max_abs(state.w)
+        part = self._part
+        if part.shape[0] < self.grid.shape[0]:
+            part = self._part = np.zeros(self.grid.shape[0], np.float64)
+        K.cfl_max(part, state.u, state.v, state.w)
+        s = float(part[: self.grid.shape[0]].max())
         dt = math.inf
         if s > 0.0:
             dt = 0.5 * dx / s
@@ -275,7 +288,7 @@ class FlowSolver:
         return m / s if s > 0.0 else 0.0
 
     # ------------------------------------------------------------------ one step
-    def _substep(self, state: FlowState, props: FlowProps, tref: float, dt: float) -> int:
+    def _substep(self, state: FlowState, props: FlowProps, dt: float) -> int:
         g = self.grid
         dx = g.dx
         use_nut = self.smagorinsky_cs > 0.0
@@ -309,7 +322,7 @@ class FlowSolver:
         )  # fmt: skip
         K.rhs_w(
             self._ws, state.u, state.v, state.w, state.p, g.mw, self._T, self._nut, props.nu, dt,
-            dx, self._mscheme, self._fx, self._fy, use_nut, props.g * props.beta, tref,
+            dx, self._mscheme, self._fx, self._fy, use_nut, props.g * props.beta, 0.0,
         )  # fmt: skip
         return self._project(state, self._us, self._vs, self._ws, dt)
 
@@ -332,13 +345,17 @@ class FlowSolver:
         """
         if dt <= 0.0:
             raise ValueError("dt must be positive")
+        if self.threads is not None and numba.get_num_threads() != self.threads:
+            numba.set_num_threads(self.threads)
         g = self.grid
-        self._T[...] = T_liquid
-        self._T[~g.liq] = 0.0
         if props.T_ref is not None:
             tref = float(props.T_ref)
         else:
-            tref = float((self._T.astype(np.float64) * g.volume).sum() / g.volume.sum())
+            tref = float((np.asarray(T_liquid, np.float64) * g.volume).sum() / g.volume.sum())
+        # Work with T - T_ref (float64): the buoyancy needs it, and advecting the offset field
+        # keeps a divergence error of the projection from producing a heat source ~ T_ref div(u).
+        np.subtract(T_liquid, tref, out=self._T, where=g.liq)
+        self._T[~g.liq] = 0.0
         rcp_a = props.rho * props.cp * g.dx * g.dx
         q = np.zeros(g.shape, np.float64)
         remaining = dt
@@ -348,7 +365,7 @@ class FlowSolver:
             h = min(remaining, self.max_dt(state, props.nu))
             if remaining - h < 1e-9 * dt:
                 h = remaining
-            iters += self._substep(state, props, tref, h)
+            iters += self._substep(state, props, h)
             K.flux_x(self._Fx, self._T, state.u, g.mu, g.wx, g.liq, rcp_a, self._sscheme)
             K.flux_y(self._Fy, self._T, state.v, g.mv, g.wy, g.liq, rcp_a, self._sscheme)
             K.flux_z(self._Fz, self._T, state.w, g.mw, g.wz, g.liq, rcp_a, self._sscheme)

@@ -156,7 +156,7 @@ def test_rest_state_is_a_fixed_point(cylinder):
 def test_stable_stratification_stays_at_rest():
     """Hot over cold is hydrostatic: buoyancy is balanced by the pressure gradient."""
     gr = box_grid(6, 6, 10, 0.02)
-    fs = FlowSolver(gr)
+    fs = FlowSolver(gr, poisson_tol=1e-11)
     st = fs.initial_state()
     props = FlowProps(rho=1000.0, beta=2e-4, nu=1e-6, cp=4180.0, T_ref=300.0)
     T = 300.0 + 20.0 * (np.arange(10) / 9.0 - 0.5)[None, None, :] * np.ones(gr.shape)

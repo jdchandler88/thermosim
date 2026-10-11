@@ -113,7 +113,7 @@ def run_cavity(n: int, scheme: str = "vanleer", t_end: float = 40.0, dtype=np.fl
         res = fs.step(st, T, props, dt)
         t += dt
         n_steps += 1
-        assert res.max_divergence < (1e-6 if dtype == np.float64 else 1e-4)
+        assert res.max_divergence < (2e-6 if dtype == np.float64 else 1e-4)
         if n_steps % 400 == 0:
             if np.abs(st.u - prev).max() / (400 * dt) < 1e-6:  # steady
                 break

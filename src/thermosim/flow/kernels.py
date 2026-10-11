@@ -513,6 +513,25 @@ def add_mean_free(p, phi, liq, mean):
 
 
 @njit(cache=True, nogil=True, parallel=True)
+def cfl_max(part, u, v, w):
+    """Per-plane maximum over cells of ``(|u| + |v| + |w|)`` with the face velocities averaged to
+    the cell centre (m/s)."""
+    nx, ny, nz = part.shape[0], u.shape[1], u.shape[2]
+    for i in prange(nx):
+        m = 0.0
+        for j in range(ny):
+            for k in range(nz):
+                s = (
+                    0.5 * (abs(u[i, j, k]) + abs(u[i + 1, j, k]))
+                    + 0.5 * (abs(v[i, j, k]) + abs(v[i, j + 1, k]))
+                    + 0.5 * (abs(w[i, j, k]) + abs(w[i, j, k + 1]))
+                )
+                if s > m:
+                    m = s
+        part[i] = m
+
+
+@njit(cache=True, nogil=True, parallel=True)
 def plane_sum(part, a):
     """Per-plane sum of a cell array."""
     nx, ny, nz = a.shape
@@ -722,9 +741,7 @@ def rbgs(x, b, wx, wy, wz, color):
     nx, ny, nz = x.shape
     for i in prange(nx):
         for j in range(ny):
-            for k in range(nz):
-                if ((i + j + k) & 1) != color:
-                    continue
+            for k in range((color + i + j) & 1, nz, 2):
                 d = 0.0
                 s = 0.0
                 a = wx[i, j, k]

@@ -133,7 +133,7 @@ class PoissonSolver:
     Args:
         wx, wy, wz: face open fractions (see ``FlowGrid``); dtype of the solver.
         liq: liquid-cell mask.
-        tol: relative residual ``|r|_2 / |b|_2`` at which CG stops (default 1e-9 for float64,
+        tol: relative residual ``|r|_2 / |b|_2`` at which CG stops (default 1e-6 for float64,
             1e-5 for float32).
         max_iter: iteration cap.
     """
@@ -151,7 +151,7 @@ class PoissonSolver:
     def __post_init__(self) -> None:
         dtype = self.wx.dtype
         if self.tol is None:
-            self.tol = 1e-9 if dtype == np.float64 else 1e-5
+            self.tol = 1e-6 if dtype == np.float64 else 1e-5
         lv = _new_level(self.liq.shape, self.wx, self.wy, self.wz, self.liq, dtype)  # type: ignore[arg-type]
         self.levels = [lv]
         while int(lv.act.sum()) > DENSE_MAX and any(n > 1 for n in lv.shape):
