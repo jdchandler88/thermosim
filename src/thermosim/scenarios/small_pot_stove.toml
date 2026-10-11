@@ -1,0 +1,78 @@
+# Example: 5 L of water in an 8 L aluminum pot on a 2.5 kW stove burner, with a full lid.
+# Units are SI. Temperatures are kelvin: 293.15 K = 20 C, 363.15 K = 90 C.
+# Vessel: 0.22 m inner diameter, 0.21 m inner height (8.0 L). The fill height for 5 L is
+# 0.132 m.
+
+schema_version = 1
+name = "Small pot on stove, 5 L water, full lid"
+
+[vessel]
+shape = "cylinder"
+inner_diameter_m = 0.22
+inner_height_m = 0.21
+wall_thickness_m = 0.002
+base_thickness_m = 0.005
+material = "aluminum"
+
+# Full lid. covered_fraction is forced to 1.0 for mode "full".
+[lid]
+mode = "full"
+material = "aluminum"
+thickness_m = 0.002
+
+[liquid]
+volume_m3 = 0.005
+initial_temp_K = 293.15          # 20 C
+specific_gravity = 1.000         # water
+
+# 2.5 kW stove burner at 50 % efficiency. The 0.18 m disk sits under the 0.22 m pot base.
+[heat_source]
+type = "burner"
+rated_power_W = 2500.0
+efficiency = 0.5
+footprint = "disk"
+footprint_outer_diameter_m = 0.18
+footprint_inner_diameter_m = 0.0
+
+[heat_source.actuator]
+type = "gas_valve"
+min_fraction = 0.2
+response_time_s = 2.0
+
+# Indoors at 21 C, still air.
+[atmosphere]
+ambient_temp_K = 294.15          # 21 C
+wind_speed_m_s = 0.0
+relative_humidity = 0.5
+altitude_m = 0.0
+
+[[probes]]
+name = "center"
+position_m = [0.0, 0.0, 0.06]
+
+[[probes]]
+name = "near_wall"
+position_m = [0.10, 0.0, 0.05]
+
+[target]
+temp_K = 363.15                  # 90 C
+probe = "mean"
+
+[[power_schedule]]
+t_s = 0.0
+command = 1.0
+
+[simulation]
+cell_size_m = 0.005
+max_sim_time_s = 7200.0          # 2 h
+mode = "fast"
+realtime_speed = 1.0
+sample_interval_s = 1.0
+snapshot_interval_s = 5.0
+coeff_refresh_s = 1.0
+plateau_window_s = 600.0
+plateau_rate_K_per_min = 0.05
+
+[model]
+liquid_transport = "effective_conductivity"
+k_eff_scale = 1.0

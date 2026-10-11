@@ -1,0 +1,82 @@
+# Example: 40 L of water heated in a 15 gal (57 L) stainless kettle on a propane burner.
+# Units are SI. Temperatures are kelvin: 288.15 K = 15 C, 372.15 K = 99 C.
+# Vessel: 0.36 m inner diameter, 0.56 m inner height (57.0 L). The 1.5 mm wall and 4 mm base
+# are typical for a brewing kettle. The fill height for 40 L is 0.393 m.
+
+schema_version = 1
+name = "Propane kettle, 40 L water (57 L stainless)"
+
+[vessel]
+shape = "cylinder"
+inner_diameter_m = 0.36
+inner_height_m = 0.56
+wall_thickness_m = 0.0015
+base_thickness_m = 0.004
+material = "stainless_304"
+
+# No lid: open-top heating, so the free surface loses heat and evaporates.
+[lid]
+mode = "none"
+
+# Uninsulated kettle, so there is no [insulation] table.
+
+[liquid]
+volume_m3 = 0.040
+initial_temp_K = 288.15          # 15 C
+specific_gravity = 1.000         # water
+
+# Propane burner under the base. 60,000 BTU/hr is 17,585 W gross. Efficiency 0.35 means
+# about 6.2 kW reaches the liquid. The 0.20 m disk is a typical burner footprint.
+[heat_source]
+type = "burner"
+rated_power_W = 17585.0
+efficiency = 0.35
+footprint = "disk"
+footprint_outer_diameter_m = 0.20
+footprint_inner_diameter_m = 0.0
+
+[heat_source.actuator]
+type = "gas_valve"
+min_fraction = 0.2
+response_time_s = 2.0
+
+# Outdoors at 10 C with a 2 m/s wind. Forced convection on the outside is significant.
+[atmosphere]
+ambient_temp_K = 283.15          # 10 C
+wind_speed_m_s = 2.0
+relative_humidity = 0.5
+altitude_m = 0.0
+
+# Probe positions are in vessel coordinates (m), origin at the centre of the inner base.
+[[probes]]
+name = "center"
+position_m = [0.0, 0.0, 0.20]
+
+[[probes]]
+name = "near_wall"
+position_m = [0.165, 0.0, 0.10]  # 15 mm inside the wall, 10 cm up
+
+# Stop when the volume-weighted mean reaches 1 K below boiling. Boiling is not modelled.
+[target]
+temp_K = 372.15                  # 99 C
+probe = "mean"
+
+# Full power for the whole run.
+[[power_schedule]]
+t_s = 0.0
+command = 1.0
+
+[simulation]
+cell_size_m = 0.005
+max_sim_time_s = 14400.0         # 4 h
+mode = "fast"
+realtime_speed = 1.0
+sample_interval_s = 1.0
+snapshot_interval_s = 5.0
+coeff_refresh_s = 1.0
+plateau_window_s = 600.0
+plateau_rate_K_per_min = 0.05
+
+[model]
+liquid_transport = "effective_conductivity"
+k_eff_scale = 1.0
