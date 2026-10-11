@@ -118,7 +118,7 @@ class LidSpec:
     present: bool
     covered_fraction: float         # 0..1 (1 = full lid); ignored if not present
     area: float                     # m^2 lid area (= covered_fraction * pi*R^2)
-    heat_capacity: float            # J/K lid thermal mass
+    heat_capacity: float            # J/K lid thermal mass; must be > 0 when present (all fields 0 when not present)
     emissivity: float
     insulation_r: float             # m^2 K/W
     headspace_volume: float         # m^3 (for headspace air heat capacity)
@@ -553,7 +553,7 @@ class ManualCommand(CommandSource):                # thread-safe; used in REALTI
 ```python
 class ThermalSolver:
     def __init__(self, domain: Domain) -> None: ...         # precomputes index arrays; triggers Numba compile
-    def initial_state(self, T0_liquid: float, T0_shell: float, T_amb: float) -> ThermalState: ...
+    def initial_state(self, T0_liquid: float, T0_shell: float, T_amb: float) -> ThermalState: ...  # lid & headspace start at T_amb
     def stable_dt(self, coeffs: StepCoefficients) -> float: ...   # s, liquid stability limit * 0.9
     def step(self, state: ThermalState, coeffs: StepCoefficients, dt: float) -> EnergyFlows: ...
         # advances state IN PLACE by dt (state.t += dt). Shell/lid/headspace may substep internally.
